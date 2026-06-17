@@ -1,0 +1,46 @@
+# Game data — never commit (copyrighted). Supply your own legal POD Gold disc.
+*.exe
+*.dll
+*.bin
+*.cue
+*.cab
+*.hdr
+*.iso
+*.mdf
+*.mds
+*.bch
+disc_image/
+game_files/
+analysis/*.exe
+POD2_0.*
+
+# Generated (regenerable from PODMMX.EXE + run_lift.py / gen_imports.py)
+src/recomp/gen/
+src/runtime/imports_gen.c
+analysis/ida_funcs.json
+
+# Bring-up logs / scratch
+boot_out.txt
+boot_err.txt
+e1.txt
+o1.txt
+*.scratch.txt
+
+# IDA databases
+*.i64
+*.id0
+*.id1
+*.id2
+*.nam
+*.til
+
+# Build / python
+build/
+*.obj
+*.o
+__pycache__/
+*.pyc
+
+# OS
+Thumbs.db
+.DS_Store

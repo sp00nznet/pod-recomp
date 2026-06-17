@@ -1,0 +1,6 @@
+[*] opening analysis/PODMMX.EXE (idalib auto-analysis) ...
+[+] functions: 3411
+[+] named (FLIRT/user): 524
+[+] wrote config/functions.json, config/ida_names.txt
+
+Loading IDA library from: C:\Program Files\IDA Professional 9.1\idalib.dll
