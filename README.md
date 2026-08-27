@@ -120,6 +120,22 @@ CMakeLists.txt run_pipeline.py
 - [docs/PHASE3.md](docs/PHASE3.md) — runtime bring-up: memory model, how far it boots, the frontier
 - [docs/DISC.md](docs/DISC.md) — what's on the CD
 
+## License
+
+The code in this repository is released under the [MIT License](LICENSE).
+
+That covers **this project's own source** — the runtime, the import bridges, the
+DirectDraw and DirectInput shims, the threading and input layers, the lift drivers,
+the tooling and the docs. Everything here was written for this project.
+
+It does **not** cover POD itself. The game's executable, data and assets remain
+Ubi Soft's and are not distributed here. Neither is the lifted C: that is
+machine-translated from the original `PODMMX.EXE` and carries whatever rights the
+executable does, so it is generated on your machine, from your copy, and never
+checked in. The screenshots in `docs/` are the recompilation's own output against a
+disc you supply — the artwork in them is the game's, shown only to record how far
+this gets.
+
 ## Family
 
 Part of a set of PC static-recomp projects sharing the `pcrecomp` toolkit — sister
