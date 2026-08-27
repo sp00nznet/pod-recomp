@@ -27,7 +27,7 @@ machine without an MMX Pentium and a 3dfx card under the desk.
 | **Phase 0** — disc extract + IDA-seeded discovery | ✅ Complete | 951 disc files; **3,411 functions** found |
 | **Phase 1** — x86 → C codegen | ✅ Complete | **3,405 functions, 0 lift errors**, 422K lines of C |
 | **Phase 2** — compile | ✅ Complete | static lib, **0 compile errors** |
-| **Phase 3** — runtime / boot | 🟢 In progress | `pod_recomp.exe` runs POD's **full multi-threaded logic**: startup → WinMain message loop + worker threads, **~34M function calls**, RDTSC CPU calibration, FPU 3D geometry math, **14 game assets loaded** (scripts, dicts, car models, sound), second DirectDraw init. Frontier: the encrypted data-cache writer. |
+| **Phase 3** — runtime / boot | 🟢 **Menu on screen, race loading** | `pod_recomp.exe` draws POD's main menu ([docs/menu.png](docs/menu.png)), takes keyboard input, and on **ONE PLAYER** (or its own attract-mode timeout) loads the Downtown circuit for real — `DownTown.BL3`, the HUD skin, all seven cars' sound banks. Frontier: one face normal comes out with an x87 *integer-indefinite* component, which cascades into a zero camera basis and trips POD's own `("3D","NORM")` check. |
 | Phase 3+ — gameplay | ⏳ Pending | first frame (intro is `DrawDibDraw`/Indeo video — stubbed; or reach the DirectDraw menu); harden WINMM/joystick/video stubs; the world of Io |
 
 **It runs its game logic — multi-threaded.** The recompiled `PODMMX.EXE` runs its
@@ -40,8 +40,25 @@ FPU fast-`sqrt` vector math, **loading 14 real game assets** (`chrome.CH3`, `gam
 `gamma.MEG`, encrypted `.bin`/`.BMD` car & sound data) and re-initializing DirectDraw for
 the game proper. Two broadly-impactful lifter fixes got it this deep: correct
 `rep`/`repne` string-op (`memcpy`/`memset`) lifting, and correct FPU `st(n)` register
-indexing (`X86_REG_ST0`). It currently stops in the encrypted data-cache **write path**
-just before the first frame presents. See [docs/PHASE3.md](docs/PHASE3.md).
+indexing (`X86_REG_ST0`).
+
+**And it draws.** Four fixes got a clean menu on screen:
+
+- Functions that **fall off their end** — Watcom shares tails and IDA carves each
+  entry into its own function, so 565 of them had no `ret` and silently leaked 4
+  bytes of the caller's stack — now tail-dispatch to the fall-through address.
+- POD's **window procedure**, which had never once been called, is wired up:
+  `RegisterClassA` captures it, `RegisterWindowMessageA` hands out real ids instead
+  of `WM_NULL`, and `DispatchMessageA` calls into it.
+- POD's 2D blit library is **self-modifying** — it writes the glyph width and the
+  surface pitch into its own `cmp`/`add` immediates before running. Static C kept
+  the author's `0x1234567` placeholders, so the font blitter sprayed the whole
+  frame. The lifter now sources those 27 immediates from memory.
+- **MMX**, on the MMX build, was entirely unimplemented in the lifter.
+
+See [docs/PHASE3.md](docs/PHASE3.md).
+
+![POD Gold's main menu, recompiled](docs/menu.png)
 
 ## The target
 

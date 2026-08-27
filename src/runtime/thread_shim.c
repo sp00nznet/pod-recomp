@@ -148,6 +148,9 @@ void imp_MsgWaitForMultipleObjects(void) {  /* (nCount, lpHandles, bWaitAll, dwM
     HANDLE hh[64]; if (n > 64) n = 64;
     for (uint32_t i = 0; i < n; i++) { HObj* o = obj_get(MEM32(ph + i * 4)); hh[i] = o ? o->h : NULL; }
     static uint32_t m = 0; int log = (m++ < 20);
+    /* The pump is where the game sits when it is alive but drawing nothing.
+     * Dump what ran between waits, once, so an idle loop names its own code. */
+    if (m == 500 || m == 3000 || m == 6000) recomp_dump_all_rings("pump tick");
     if (log) fprintf(stderr, "[wait] MsgWait tid=%lu n=%u ms=%u ...\n", GetCurrentThreadId(), n, ARG(3));
     DWORD r = MsgWaitForMultipleObjects(n, hh, (BOOL)ARG(2), ARG(3), ARG(4));
     if (log) fprintf(stderr, "[wait] MsgWait tid=%lu -> %lu\n", GetCurrentThreadId(), r);

@@ -22,12 +22,48 @@
 
 /* ---- register model: per-thread (RECOMP_TLS); memory (g_mem_base) is shared ---- */
 RECOMP_TLS uint32_t g_eax = 0, g_ecx = 0, g_edx = 0, g_esp = 0;
-RECOMP_TLS uint32_t g_ebx = 0, g_esi = 0, g_edi = 0;
+RECOMP_TLS uint32_t g_ebx = 0, g_esi = 0, g_edi = 0, g_ebp = 0;
+RECOMP_TLS uint32_t g_cur_func = 0;       /* VA of the function now running */
+#ifdef RECOMP_TRACE
+RECOMP_TLS uint32_t g_call_stack[RECOMP_STACK_SIZE];
+RECOMP_TLS uint32_t g_call_depth = 0;
+#endif
+
+#ifdef RECOMP_TRACE
+/* Report each (caller, callee) pair that leaks stack once, so one bad lift shows
+ * up as a single line instead of thousands. */
+void recomp_stack_leak(uint32_t caller, uint32_t callee, uint32_t esp0, uint32_t esp1) {
+    static uint32_t seen[64][2];
+    static uint32_t n;
+    for (uint32_t i = 0; i < n; i++)
+        if (seen[i][0] == caller && seen[i][1] == callee) return;
+    if (n < 64) { seen[n][0] = caller; seen[n][1] = callee; n++; }
+    fprintf(stderr, "[stack-leak] 0x%08X called 0x%08X: esp %08X -> %08X (%d bytes)\n",
+            caller, callee, esp0, esp1, (int)esp0 - (int)esp1);
+}
+#endif
+
+void recomp_dump_stack(const char* why) {
+#ifdef RECOMP_TRACE
+    uint32_t d = g_call_depth, shown = d < RECOMP_STACK_SIZE ? d : RECOMP_STACK_SIZE;
+    fprintf(stderr, "\n=== call stack (tid=%lu): %s ===\n  0x%08X  <- now\n",
+            GetCurrentThreadId(), why, g_cur_func);
+    for (uint32_t i = shown; i-- > 0; )
+        fprintf(stderr, "  0x%08X\n", g_call_stack[i]);
+    if (d > shown) fprintf(stderr, "  ... %u deeper frames not recorded\n", d - shown);
+#else
+    (void)why;
+#endif
+}
 RECOMP_TLS uint16_t g_seg_cs = 0, g_seg_ds = 0, g_seg_es = 0;
 RECOMP_TLS uint16_t g_seg_fs = 0, g_seg_gs = 0, g_seg_ss = 0;
 ptrdiff_t g_mem_base = 0;                 /* shared address space */
 RECOMP_TLS uint32_t g_fs_base = 0;        /* per-thread TIB base (set per thread) */
 RECOMP_TLS uint32_t g_gs_base = 0;
+
+/* MMX register file: eight 64-bit registers, per-thread like the rest. POD is
+ * the MMX build -- its software rasterizer lives in these. */
+RECOMP_TLS uint64_t g_mm[8] = {0};
 
 /* Per-thread x87 FPU stack (shared across calls on one thread). */
 RECOMP_TLS double   g_st[8] = {0};
@@ -43,19 +79,60 @@ uint32_t g_icall_count = 0;
 uint32_t g_enter_trace[RECOMP_ENTER_SIZE] = {0};
 uint32_t g_enter_idx = 0;
 /* Per-thread call-history ring (race-free, unlike the shared trace above). */
-RECOMP_TLS uint32_t g_tls_ring[32] = {0};
+#define TLS_RING 256
+RECOMP_TLS uint32_t g_tls_ring[TLS_RING] = {0};
 RECOMP_TLS uint32_t g_tls_ridx = 0;
+/* Every guest thread registers its ring, so any thread can dump all of them.
+ * A hang is a question about the threads you are NOT in. */
+#define MAX_RINGS 16
+static struct { DWORD tid; uint32_t* ring; uint32_t* idx;
+                uint32_t* stack; uint32_t* depth; uint32_t* cur; } g_rings[MAX_RINGS];
+static volatile LONG g_nrings = 0;
+static RECOMP_TLS int g_ring_registered = 0;
+
+void recomp_dump_all_rings(const char* why) {
+    LONG n = g_nrings;
+    for (LONG i = 0; i < n && i < MAX_RINGS; i++) {
+        uint32_t idx = *g_rings[i].idx;
+        uint32_t c = idx < 16 ? idx : 16;
+        uint32_t d = *g_rings[i].depth, shown = d < 24 ? d : 24;
+        fprintf(stderr, "[threads] tid=%lu (%s) in %08X, stack:", g_rings[i].tid, why,
+                *g_rings[i].cur);
+        for (uint32_t k = 0; k < shown; k++)
+            fprintf(stderr, " %08X", g_rings[i].stack[d - 1 - k]);
+        fprintf(stderr, "  (depth %u)\n          last:", d);
+        for (uint32_t k = 0; k < c; k++)
+            fprintf(stderr, " %08X", g_rings[i].ring[(idx - c + k) & (TLS_RING - 1)]);
+        fprintf(stderr, "\n");
+    }
+    fflush(stderr);
+}
+
 void recomp_dump_tls_ring(const char* why) {
     fprintf(stderr, "\n=== per-thread call ring (tid=%lu): %s ===\n", GetCurrentThreadId(), why);
-    uint32_t n = g_tls_ridx < 32 ? g_tls_ridx : 32;
+    uint32_t n = g_tls_ridx < TLS_RING ? g_tls_ridx : TLS_RING;
     for (uint32_t i = 0; i < n; i++)
-        fprintf(stderr, "  %2u 0x%08X\n", i, g_tls_ring[(g_tls_ridx - n + i) & 31]);
+        fprintf(stderr, "  %2u 0x%08X\n", i, g_tls_ring[(g_tls_ridx - n + i) & (TLS_RING-1)]);
 }
+static DWORD g_start_tick;   /* defined below; needed by the arg hook */
+uint32_t g_poll_va = 0;      /* POD_POLL_VA */
 void recomp_trace_enter(uint32_t va) {
     /* Record only game-engine functions in the per-thread ring (skip the Watcom
      * CRT/runtime region >= 0x004C8000), so a dump at exit shows the game code that
      * triggered it, not the CRT teardown chain. */
-    if (va < 0x004C8000u) g_tls_ring[g_tls_ridx++ & 31] = va;
+    if (!g_ring_registered) {
+        g_ring_registered = 1;
+        LONG slot = InterlockedIncrement(&g_nrings) - 1;
+        if (slot < MAX_RINGS) {
+            g_rings[slot].tid = GetCurrentThreadId();
+            g_rings[slot].ring = g_tls_ring;
+            g_rings[slot].idx = &g_tls_ridx;
+            g_rings[slot].stack = g_call_stack;
+            g_rings[slot].depth = &g_call_depth;
+            g_rings[slot].cur = &g_cur_func;
+        }
+    }
+    if (va < 0x004C8000u) g_tls_ring[g_tls_ridx++ & (TLS_RING-1)] = va;
     /* memset-overrun watch: the Watcom memset wrapper (sub_004C8368) takes its
      * count in EBX; its core (sub_004CA160) and fill loop (sub_004CA197) take it
      * in ECX. Catch a count larger than the whole arena at entry -- that's the
@@ -69,6 +146,73 @@ void recomp_trace_enter(uint32_t va) {
         fflush(stderr);
         _Exit(8);
     }
+    /* POD_ARGS_AT=<va>: print that function's arguments on entry -- registers
+     * first (Watcom passes in eax/edx/ebx/ecx) then the stack, rendering anything
+     * that points at a printable string as one. POD's error reporter takes its
+     * message that way, and it is the only place the game says what went wrong. */
+    extern uint32_t g_args_at_va;
+    if (g_args_at_va && va == g_args_at_va) {
+        static uint32_t n = 0, after = 0xFFFFFFFFu;
+        if (after == 0xFFFFFFFFu) { const char* a = getenv("POD_ARGS_AFTER_MS"); after = a ? (uint32_t)strtoul(a, NULL, 0) : 0; }
+        if ((uint32_t)(timeGetTime() - g_start_tick) >= after && n++ < 12) {
+            fprintf(stderr, "[args] 0x%08X eax=%08X edx=%08X ebx=%08X ecx=%08X\n",
+                    va, g_eax, g_edx, g_ebx, g_ecx);
+            uint32_t vals[6] = { g_eax, g_edx, g_ebx, g_ecx,
+                                 MEM32(g_esp + 4), MEM32(g_esp + 8) };
+            for (int i = 0; i < 6; i++) {
+                uint32_t p = vals[i];
+                if (p < 0x00400000u || p >= 0x00800000u) continue;
+                char buf[80]; int k = 0;
+                for (; k < 79; k++) {
+                    uint8_t c = MEM8(p + k);
+                    if (!c) break;
+                    if (c < 0x20 || c > 0x7E) { k = 0; break; }
+                    buf[k] = (char)c;
+                }
+                if (k > 2) { buf[k] = 0; fprintf(stderr, "        [%d] \"%s\"\n", i, buf); }
+            }
+            if (getenv("POD_ARGS_RING")) recomp_dump_tls_ring("args hook");
+            { const char* mv = getenv("POD_ARGS_MEM");
+              if (mv) { uint32_t a = (uint32_t)strtoul(mv, NULL, 0);
+                  fprintf(stderr, "        mem 0x%08X ->", a);
+                  for (int k = 0; k < 12; k++) fprintf(stderr, " %08X", MEM32(a + k * 4));
+                  fprintf(stderr, "\n"); } }
+            /* Registers that look like guest pointers: show what they point at. */
+            for (int i = 0; i < 4; i++) {
+                uint32_t p = vals[i];
+                if (p < 0x00400000u || p >= 0x08800000u || (p & 3)) continue;
+                fprintf(stderr, "        [%d] 0x%08X ->", i, p);
+                for (int k = 0; k < 6; k++) fprintf(stderr, " %08X", MEM32(p + k * 4));
+                fprintf(stderr, "\n");
+            }
+        }
+    }
+    /* POD_POLL_VA=<va>: sample three dwords on every function entry and report
+     * each change. Slower than the page trap but it cannot miss a write, which
+     * matters when the page is busy and the field is one of many. */
+    extern uint32_t g_poll_va;
+    if (g_poll_va) {
+        static uint32_t prev[3], seen, hits;
+        uint32_t now0 = MEM32(g_poll_va), now1 = MEM32(g_poll_va + 4), now2 = MEM32(g_poll_va + 8);
+        if (!seen) { seen = 1; prev[0] = now0; prev[1] = now1; prev[2] = now2; }
+        else if ((now0 != prev[0] || now1 != prev[1] || now2 != prev[2]) && hits < 40) {
+            /* The change happened between the previous function entry and this
+             * one, so the writer is the function that was running: the last ring
+             * entry, not `va`. */
+            fprintf(stderr, "[poll] 0x%08X: %08X %08X %08X -> %08X %08X %08X  after:",
+                    g_poll_va, prev[0], prev[1], prev[2], now0, now1, now2);
+            for (int q = 6; q >= 1; q--)
+                fprintf(stderr, " %08X", g_tls_ring[(g_tls_ridx - q) & (TLS_RING - 1)]);
+            fprintf(stderr, "  next %08X\n", va);
+            prev[0] = now0; prev[1] = now1; prev[2] = now2; hits++;
+        }
+    }
+    host_watch_tick();
+    extern uint32_t g_dump_arm_va;
+    /* POD_DUMP_ARM: hold the POD_DUMP_AFTER snapshot until this function has run
+     * once, so a frame can be captured after a particular pass rather than on the
+     * first call of the run. */
+    if (va == g_dump_arm_va) { extern int g_dump_armed; g_dump_armed = 1; }
     g_enter_trace[g_enter_idx % RECOMP_ENTER_SIZE] = va;
     g_enter_idx++;
     /* Loop watchdog: if we run an absurd number of function entries without
@@ -238,7 +382,13 @@ uint32_t host_create_window(uint32_t title_va) {
                              NULL, NULL, wc.hInstance, NULL);
     ShowWindow(g_hwnd, SW_SHOW);
     g_hdc = GetDC(g_hwnd);
-    printf("[gfx] window created (%dx%d)\n", g_dib_w, g_dib_h);
+    /* POD's WinMain blocks in MsgWaitForMultipleObjects(INFINITE) and only runs
+     * its frame when something wakes it. The original ran fullscreen-exclusive
+     * with input and paints arriving constantly; a windowed build that nobody
+     * touches gets nothing and sleeps forever. A 60 Hz timer is the message
+     * traffic the game expects. */
+    SetTimer(g_hwnd, 1, 16, NULL);
+    fprintf(stderr, "[gfx] window created (%dx%d)\n", g_dib_w, g_dib_h);
     return H_HWND;
 }
 
@@ -320,6 +470,55 @@ void host_present16(uint32_t buf_va, int w, int h, int pitch) {
     bi.h.biBitCount = 16;
     bi.h.biCompression = BI_BITFIELDS;
     bi.mask[0] = 0xF800; bi.mask[1] = 0x07E0; bi.mask[2] = 0x001F;  /* RGB 565 */
+    /* POD_FRAME_DUMP=<path>: write the Nth presented frame as a 24bpp BMP, so a
+     * headless run can show what actually reached the screen. */
+    { static uint32_t seq = 0; static int taken = 0;
+      const char* path = getenv("POD_FRAME_DUMP");
+      const char* nstr = getenv("POD_FRAME_DUMP_N");
+      const char* mstr = getenv("POD_FRAME_DUMP_MS");   /* by wall clock instead */
+      uint32_t want = nstr ? (uint32_t)strtoul(nstr, NULL, 10) : 0;
+      const char* estr = getenv("POD_FRAME_EVERY_MS");  /* a filmstrip */
+      static uint32_t next_ms = 0; static int shot = 0;
+      char numbered[512];
+      uint32_t now_ms = (uint32_t)(timeGetTime() - g_start_tick);
+      int due;
+      if (estr) {
+          uint32_t iv = (uint32_t)strtoul(estr, NULL, 10);
+          due = (now_ms >= next_ms && shot < 60);
+          if (due && path) {
+              next_ms = now_ms + (iv ? iv : 1000);
+              snprintf(numbered, sizeof(numbered), "%s.%02d.bmp", path, shot++);
+              path = numbered;
+          }
+      } else {
+          due = mstr ? (!taken && now_ms >= (uint32_t)strtoul(mstr, NULL, 10))
+                     : (seq++ == want);
+      }
+      if (path && due) { taken = 1;
+        FILE* f = fopen(path, "wb");
+        if (f) {
+            int stride = (w * 3 + 3) & ~3, sz = stride * h, pitch2 = pitch ? pitch : w * 2;
+            uint8_t hdr[54] = {0}; uint32_t v;
+            hdr[0]='B'; hdr[1]='M'; v = 54 + sz; memcpy(hdr + 2, &v, 4);
+            v = 54; memcpy(hdr + 10, &v, 4); v = 40; memcpy(hdr + 14, &v, 4);
+            memcpy(hdr + 18, &w, 4); memcpy(hdr + 22, &h, 4);
+            hdr[26] = 1; hdr[28] = 24; memcpy(hdr + 34, &sz, 4);
+            fwrite(hdr, 1, 54, f);
+            uint8_t* row = (uint8_t*)calloc(1, (size_t)stride);
+            for (int y = h - 1; y >= 0; y--) {          /* BMP rows are bottom-up */
+                for (int x = 0; x < w; x++) {
+                    uint16_t p = *(uint16_t*)(uintptr_t)ADDR(buf_va + y * pitch2 + x * 2);
+                    row[x*3+2] = (uint8_t)(((p >> 11) & 0x1F) << 3);
+                    row[x*3+1] = (uint8_t)(((p >> 5)  & 0x3F) << 2);
+                    row[x*3+0] = (uint8_t)((p & 0x1F) << 3);
+                }
+                fwrite(row, 1, (size_t)stride, f);
+            }
+            free(row); fclose(f);
+            fprintf(stderr, "[gfx] wrote frame %u to %s (%dx%d)\n", want, path, w, h);
+        }
+      }
+    }
     RECT rc; GetClientRect(g_hwnd, &rc);
     HDC dc = GetDC(g_hwnd);
     SetStretchBltMode(dc, COLORONCOLOR);
@@ -340,6 +539,40 @@ void host_register_surface16(uint32_t buf, int w, int h, int pitch) {
         g_ddnsurf++;
     }
 }
+/* POD_DUMP_AFTER: snapshot the last-registered surface (the back buffer) the
+ * moment the named function returns -- what that drawing pass alone produced. */
+uint32_t g_after_call_va = 0;
+uint32_t g_args_at_va = 0;    /* POD_ARGS_AT */
+uint32_t g_dump_arm_va = 0;   /* POD_DUMP_ARM: gate for the snapshot below */
+int g_dump_armed = 1;         /* no gate unless POD_DUMP_ARM is set */
+void recomp_after_call(void) {
+    /* POD_RET_PRINT: report the return value instead of snapshotting a frame.
+     * The only way to see what a lifted leaf function actually computed. */
+    if (getenv("POD_RET_PRINT")) {
+        static uint32_t n = 0;
+        if (n++ < 12)
+            fprintf(stderr, "[ret] 0x%08X -> eax=%08X edx=%08X ebx=%08X st0=%f\n",
+                    g_after_call_va, g_eax, g_edx, g_ebx, g_st[0]);
+        return;
+    }
+    static int done = 0;
+    if (done || !g_ddnsurf || !g_dump_armed) return;
+    done = 1;
+    int i = g_ddnsurf - 1;
+    uint32_t buf = g_ddsurf[i][0], w = g_ddsurf[i][1], h = g_ddsurf[i][2], p = g_ddsurf[i][3];
+    FILE* f = fopen("after_call.bin", "wb");
+    if (!f) return;
+    for (uint32_t y = 0; y < h; y++)
+        fwrite((const void*)(uintptr_t)ADDR(buf + y * p), 1, w * 2, f);
+    fclose(f);
+    fprintf(stderr, "[after] 0x%08X returned; dumped surface 0x%08X %ux%u\n",
+            g_after_call_va, buf, w, h);
+    /* Everything that touches the frame from here on is a later drawing pass.
+     * POD_WATCH_ROW picks which scanline to trap. */
+    { const char* r = getenv("POD_WATCH_ROW");
+      if (r) host_watch_page(buf + (uint32_t)atoi(r) * p); }
+}
+
 static void auto_present_dd(void) {
     uint32_t best = 0, bestnz = 0, bw = 0, bh = 0, bp = 0;
     for (int i = 0; i < g_ddnsurf; i++) {
@@ -369,19 +602,147 @@ static void fill_guest_msg(uint32_t lpMsg, const MSG* m) {
     MEM32(lpMsg + 20) = (uint32_t)m->pt.x;
     MEM32(lpMsg + 24) = (uint32_t)m->pt.y;
 }
-/* Dispatch pending window messages to the real window; return 1 when a thread
- * message (hwnd==NULL) is available in *m, 2 on WM_QUIT, 0 if none (non-blocking). */
+/* POD's own window procedure, captured from the WNDCLASS it registers. Until it
+ * is known, window messages go to our host proc as before. */
+uint32_t g_guest_wndproc = 0;
+
+/* Call POD's WndProc. It is __stdcall (CALLBACK): arguments right-to-left on the
+ * stack, and its `ret 0x10` pops them along with the dummy return address, so the
+ * guest esp balances by itself. Runs on the calling thread's guest CPU state,
+ * which is why this is only ever called from inside a guest import shim. */
+uint32_t call_guest_wndproc(uint32_t hwnd, uint32_t msg, uint32_t wp, uint32_t lp) {
+    if (!g_guest_wndproc) return 0;
+    recomp_func_t fn = recomp_lookup_manual(g_guest_wndproc);
+    if (!fn) fn = recomp_lookup(g_guest_wndproc);
+    if (!fn) return 0;
+    PUSH32(g_esp, lp);
+    PUSH32(g_esp, wp);
+    PUSH32(g_esp, msg);
+    PUSH32(g_esp, hwnd);
+    PUSH32(g_esp, RECOMP_RETADDR);
+    fn();
+    return g_eax;
+}
+
+/* Return 1 when a message is available in *m, 2 on WM_QUIT, 0 if none
+ * (non-blocking). Window messages for the game's window are handed to the game
+ * so its own loop dispatches them into its WndProc -- POD drives its state
+ * machine with private RegisterWindowMessage IDs posted to itself, so eating
+ * them here (as we used to) meant the machine never advanced. Anything else
+ * still goes to the host proc. */
 static int pump_to_thread_msg(MSG* m, int block) {
     for (;;) {
         if (!PeekMessageA(m, NULL, 0, 0, PM_REMOVE)) {
             if (!block) return 0;
             if (!GetMessageA(m, NULL, 0, 0)) return 2;   /* WM_QUIT */
         }
-        if (m->hwnd) { TranslateMessage(m); DispatchMessageA(m); continue; }  /* window msg */
-        return 1;                                                            /* thread msg */
+        if (!m->hwnd) return 1;                                    /* thread msg */
+        if (m->hwnd == g_hwnd && g_guest_wndproc) { TranslateMessage(m); return 1; }
+        TranslateMessage(m); DispatchMessageA(m);                  /* not ours */
     }
 }
+/* ============================================================
+ * Keyboard
+ *
+ * Two sources, because POD reads keys two ways and we need to drive it two ways.
+ * The state array is indexed by PC set-1 scancode, which is exactly what
+ * DirectInput's DIK_* constants are -- MapVirtualKey does the translation, so
+ * there is no table to get wrong.
+ *
+ *   - real keys, whenever our window is the foreground one, so it is playable;
+ *   - POD_KEYS="1500:DOWN,2000:RETURN", a script of millisecond timestamps, so a
+ *     headless run can walk the menus. Scripted keys are also posted as
+ *     WM_KEYDOWN/WM_KEYUP, since a menu may read either.
+ * ============================================================ */
+#define KEY_HOLD_MS 150u
+
+static uint8_t g_keys[256];
+static struct { uint32_t ms; uint8_t vk; uint8_t fired; } g_script[64];
+static int g_script_n = 0;
+
+static uint8_t vk_from_name(const char* s, size_t n) {
+    static const struct { const char* name; uint8_t vk; } tab[] = {
+        {"UP",VK_UP},{"DOWN",VK_DOWN},{"LEFT",VK_LEFT},{"RIGHT",VK_RIGHT},
+        {"RETURN",VK_RETURN},{"ENTER",VK_RETURN},{"ESC",VK_ESCAPE},
+        {"ESCAPE",VK_ESCAPE},{"SPACE",VK_SPACE},{"TAB",VK_TAB},
+        {"F1",VK_F1},{"F2",VK_F2},{"F3",VK_F3},{"F10",VK_F10},
+        {"BACK",VK_BACK},{"DELETE",VK_DELETE},
+    };
+    for (size_t i = 0; i < sizeof(tab)/sizeof(tab[0]); i++)
+        if (strlen(tab[i].name) == n && _strnicmp(tab[i].name, s, n) == 0) return tab[i].vk;
+    if (n == 1) return (uint8_t)toupper((unsigned char)s[0]);   /* letters and digits */
+    return 0;
+}
+
+void host_keys_init(void) {
+    const char* spec = getenv("POD_KEYS");
+    if (!spec) return;
+    while (*spec && g_script_n < 64) {
+        char* endp;
+        uint32_t ms = (uint32_t)strtoul(spec, &endp, 10);
+        if (endp == spec || *endp != ':') break;
+        const char* name = endp + 1;
+        const char* comma = strchr(name, ',');
+        size_t len = comma ? (size_t)(comma - name) : strlen(name);
+        uint8_t vk = vk_from_name(name, len);
+        if (vk) {
+            g_script[g_script_n].ms = ms;
+            g_script[g_script_n].vk = vk;
+            g_script[g_script_n].fired = 0;
+            g_script_n++;
+            fprintf(stderr, "[key] scripted %ums: %.*s (vk 0x%02X)\n", ms, (int)len, name, vk);
+        }
+        if (!comma) break;
+        spec = comma + 1;
+    }
+}
+
+/* Refresh the scancode array; post messages on scripted edges. */
+void host_keys_poll(void) {
+    memset(g_keys, 0, sizeof(g_keys));
+    if (g_hwnd && GetForegroundWindow() == g_hwnd) {
+        for (int vk = 8; vk < 256; vk++)
+            if (GetAsyncKeyState(vk) & 0x8000) {
+                UINT sc = MapVirtualKeyA((UINT)vk, MAPVK_VK_TO_VSC);
+                if (sc && sc < 256) g_keys[sc] = 0x80;
+            }
+    }
+    uint32_t now = (uint32_t)(timeGetTime() - g_start_tick);
+    for (int i = 0; i < g_script_n; i++) {
+        UINT sc = MapVirtualKeyA(g_script[i].vk, MAPVK_VK_TO_VSC);
+        int down = now >= g_script[i].ms && now < g_script[i].ms + KEY_HOLD_MS;
+        if (down && sc && sc < 256) g_keys[sc] = 0x80;
+        if (down && !g_script[i].fired) {
+            g_script[i].fired = 1;
+            if (g_hwnd) {
+                PostMessageA(g_hwnd, WM_KEYDOWN, g_script[i].vk, (LPARAM)(sc << 16) | 1);
+                PostMessageA(g_hwnd, WM_KEYUP,   g_script[i].vk,
+                             (LPARAM)(sc << 16) | 0xC0000001u);
+            }
+            fprintf(stderr, "[key] press vk 0x%02X at %ums\n", g_script[i].vk, now);
+        }
+    }
+}
+
+/* DirectInput keyboard state: 256 bytes, high bit set on the keys held. */
+int host_key_state(uint32_t buf, uint32_t n) {
+    if (n < 256 || !buf) return 0;
+    host_keys_poll();
+    for (uint32_t i = 0; i < 256; i++) MEM8(buf + i) = g_keys[i];
+    return 1;
+}
+
+/* The game addresses its window by our fake handle; these translate to the real
+ * one so its posts and default handling reach Windows. */
+uint32_t host_post_window_message(uint32_t msg, uint32_t wp, uint32_t lp) {
+    return g_hwnd ? (uint32_t)PostMessageA(g_hwnd, msg, wp, lp) : 0;
+}
+uint32_t host_def_window_proc(uint32_t msg, uint32_t wp, uint32_t lp) {
+    return g_hwnd ? (uint32_t)DefWindowProcA(g_hwnd, msg, wp, lp) : 0;
+}
+
 void imp_PeekMessageA(void) {   /* (lpMsg, hWnd, min, max, removeFlag) */
+    host_keys_poll();   /* scripted keys post their messages from here */
     auto_present_dd();
     MSG m; int r = pump_to_thread_msg(&m, 0);
     if (r == 1) fill_guest_msg(ARG(0), &m);
@@ -523,7 +884,11 @@ void host_translate_path(uint32_t va, char* out, int outsz) {
     else { if (rel[0] == '.' && rel[1] == '/') rel += 2; else if (rel[0] == '/') rel += 1; }
     snprintf(out, outsz, "%s/%s", POD_GAME_ROOT, rel);
     index_resolve(out, outsz);   /* fall back to basename match if exact path missing */
-    { static int n = 0; if (n++ < 80) fprintf(stderr, "[io] path '%s' -> '%s'\n", p, out); }
+    /* POD_IO_LOG=<n> raises the cap (0 = every open). The default hid the whole
+     * race load behind the startup chatter. */
+    { static int n = 0, cap = -1;
+      if (cap < 0) { const char* e = getenv("POD_IO_LOG"); cap = e ? atoi(e) : 80; }
+      if (cap == 0 || n++ < cap) fprintf(stderr, "[io] path '%s' -> '%s'\n", p, out); }
 }
 
 /* File handle table: sim handle = index + base. */
@@ -754,20 +1119,123 @@ static void dump_state(void) {
         if (g_icall_trace[idx]) fprintf(stderr, "    0x%08X\n", g_icall_trace[idx]);
     }
 }
+/* Name a host address: the module it lies in, or the guest VA it maps to inside
+ * the arena. A fault deep in kernel32 says nothing on its own; "inside ReadFile,
+ * on a pointer the game passed us" says everything. */
+static void describe_addr(const char* what, uintptr_t p) {
+    if (g_arena && p >= (uintptr_t)g_arena && p < (uintptr_t)g_arena + POD_ARENA_SIZE) {
+        fprintf(stderr, "  %s 0x%p = guest VA 0x%08X (in arena)\n",
+                what, (void*)p, (uint32_t)(p - (uintptr_t)g_arena));
+        return;
+    }
+    HMODULE m = NULL;
+    char name[MAX_PATH] = {0};
+    if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                           GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                           (LPCSTR)p, &m) && GetModuleFileNameA(m, name, MAX_PATH)) {
+        const char* base = strrchr(name, '\\');
+        fprintf(stderr, "  %s 0x%p = %s+0x%X\n", what, (void*)p,
+                base ? base + 1 : name, (unsigned)(p - (uintptr_t)m));
+    } else {
+        /* Not in a module and not in the arena: a guest VA used as a host
+         * pointer without ADDR(), or plain garbage. */
+        fprintf(stderr, "  %s 0x%p = unmapped\n", what, (void*)p);
+    }
+}
+
+/* One-shot memory watchpoint. PAGE_GUARD faults on the next access to the page
+ * and Windows clears it for us, so the guarded code runs on afterwards -- the
+ * cost is one exception, and the reward is the call stack of whoever touched a
+ * pixel. Nothing in a lifted binary announces which function is the blitter. */
+static uintptr_t g_watch_page = 0;
+static uint32_t  g_watch_rearm = 0;   /* function entries until the trap is reset */
+static uint32_t  g_watch_hits  = 0;
+#define WATCH_MAX_HITS 40
+
+static void watch_arm(uintptr_t p) {
+    DWORD old;
+    if (VirtualProtect((void*)p, 0x1000, PAGE_READONLY, &old)) g_watch_page = p;
+}
+void host_watch_page(uint32_t va) {
+    uintptr_t p = ADDR(va) & ~(uintptr_t)0xFFF;
+    watch_arm(p);
+    if (g_watch_page)
+        fprintf(stderr, "[watch] armed on guest VA 0x%08X (host %p)\n", va, (void*)p);
+}
+/* Narrow the trap to an exact guest range, so a busy page can be watched for the
+ * few bytes that matter: POD_WATCH_VA=<va> POD_WATCH_LEN=<n>. Writes elsewhere in
+ * the page are let through silently. POD_WATCH_AFTER_MS delays arming, which is
+ * how you skip the init that zeroes the field you care about. */
+static uint32_t g_watch_lo, g_watch_hi, g_watch_after_ms;
+static int g_watch_pending;
+
+void host_watch_va(uint32_t va, uint32_t len, uint32_t after_ms) {
+    g_watch_lo = va; g_watch_hi = va + (len ? len : 4);
+    g_watch_after_ms = after_ms;
+    g_watch_pending = 1;
+    fprintf(stderr, "[watch] will arm on guest VA 0x%08X..0x%08X at %ums\n",
+            g_watch_lo, g_watch_hi, after_ms);
+}
+
+/* Re-arm a little after each hit: the faulting instruction has to retire first,
+ * so we count function entries rather than resetting straight away. Sampling
+ * like this lists the writers of one page in the order they run. */
+void host_watch_tick(void) {
+    if (g_watch_pending &&
+        (uint32_t)(timeGetTime() - g_start_tick) >= g_watch_after_ms) {
+        g_watch_pending = 0;
+        host_watch_page(g_watch_lo);
+    }
+    if (g_watch_rearm && --g_watch_rearm == 0 && g_watch_hits < WATCH_MAX_HITS)
+        watch_arm(g_watch_page);
+}
+
 static LONG WINAPI veh(EXCEPTION_POINTERS* ep) {
     DWORD code = ep->ExceptionRecord->ExceptionCode;
     /* Ignore benign codes: C++ EH unwinding, thread-name set, debugger prints. */
     if (code == 0xE06D7363u || code == 0x406D1388u || code == 0x40010006u || code == 0x4001000Au)
         return EXCEPTION_CONTINUE_SEARCH;
+    /* Write-watchpoint: the page is READONLY, so reads (our own present scan)
+     * still work and only a write faults. Log it, unprotect, carry on. */
+    if (code == (DWORD)0xC0000005L && g_watch_page &&
+        ep->ExceptionRecord->NumberParameters >= 2 &&
+        ep->ExceptionRecord->ExceptionInformation[0] == 1) {
+        uintptr_t hit = (uintptr_t)ep->ExceptionRecord->ExceptionInformation[1];
+        if (hit >= g_watch_page && hit < g_watch_page + 0x1000) {
+            DWORD old;
+            VirtualProtect((void*)g_watch_page, 0x1000, PAGE_READWRITE, &old);
+            /* Outside the range of interest: let it through and re-arm. */
+            uint32_t guest = (uint32_t)(hit - (uintptr_t)g_arena);
+            if (g_watch_hi && (guest < g_watch_lo || guest >= g_watch_hi)) {
+                g_watch_rearm = 2;
+                return EXCEPTION_CONTINUE_EXECUTION;
+            }
+            /* One line per distinct writer: the background blit hits this page
+             * every frame and would otherwise drown out the pass we're after. */
+            static uint32_t last = 0;
+            if (g_cur_func != last) {
+                last = g_cur_func;
+                fprintf(stderr, "[watch] write +0x%03X from 0x%08X (caller 0x%08X)\n",
+                        (unsigned)(hit - g_watch_page), g_cur_func,
+                        g_call_depth ? g_call_stack[g_call_depth - 1] : 0);
+                fflush(stderr);
+                g_watch_hits++;
+            }
+            g_watch_rearm = 8;               /* resume, then trap the next writer */
+            return EXCEPTION_CONTINUE_EXECUTION;
+        }
+    }
     static volatile long once = 0;
     if (InterlockedIncrement(&once) > 3) return EXCEPTION_CONTINUE_SEARCH;  /* avoid spam */
-    fprintf(stderr, "\n=== EXCEPTION 0x%08lX at %p (tid=%lu) ===\n",
-            code, (void*)ep->ExceptionRecord->ExceptionAddress, GetCurrentThreadId());
+    fprintf(stderr, "\n=== EXCEPTION 0x%08lX at %p (tid=%lu, in 0x%08X) ===\n",
+            code, (void*)ep->ExceptionRecord->ExceptionAddress, GetCurrentThreadId(),
+            g_cur_func);
+    describe_addr("pc  ", (uintptr_t)ep->ExceptionRecord->ExceptionAddress);
     if (code == EXCEPTION_ACCESS_VIOLATION && ep->ExceptionRecord->NumberParameters >= 2)
-        fprintf(stderr, "  %s 0x%p\n",
-                ep->ExceptionRecord->ExceptionInformation[0] ? "write to" : "read from",
-                (void*)ep->ExceptionRecord->ExceptionInformation[1]);
+        describe_addr(ep->ExceptionRecord->ExceptionInformation[0] ? "write to" : "read from",
+                      (uintptr_t)ep->ExceptionRecord->ExceptionInformation[1]);
     dump_state();
+    recomp_dump_stack("exception");
     recomp_dump_tls_ring("exception");
     recomp_dump_trace("exception");
     fflush(stderr);
@@ -840,8 +1308,10 @@ static int setup(const char* exe) {
         return 0;
     }
     g_mem_base = (ptrdiff_t)(uintptr_t)g_arena;   /* guest VA v -> g_arena + v */
-    printf("[*] arena: %u MB at host %p (g_mem_base=0x%p)\n",
-           POD_ARENA_SIZE >> 20, g_arena, (void*)g_mem_base);
+    /* stderr, not stdout: stdout is block-buffered when redirected, so a crash
+     * loses the one line that makes every host address in the dump readable. */
+    fprintf(stderr, "[*] arena: %u MB at host %p (g_mem_base=0x%p)\n",
+            POD_ARENA_SIZE >> 20, g_arena, (void*)g_mem_base);
 
     if (!load_image(exe)) return 0;
 
@@ -882,6 +1352,18 @@ int main(int argc, char** argv) {
     g_start_tick = timeGetTime();
     host_index_build();
     AddVectoredExceptionHandler(1, veh);
+    host_keys_init();
+    { const char* a = getenv("POD_DUMP_AFTER");
+      if (a) g_after_call_va = (uint32_t)strtoul(a, NULL, 0);
+      { const char* pv = getenv("POD_POLL_VA"); if (pv) g_poll_va = (uint32_t)strtoul(pv, NULL, 0); }
+      { const char* wv = getenv("POD_WATCH_VA");
+        if (wv) host_watch_va((uint32_t)strtoul(wv, NULL, 0),
+                              getenv("POD_WATCH_LEN") ? (uint32_t)strtoul(getenv("POD_WATCH_LEN"), NULL, 0) : 12,
+                              getenv("POD_WATCH_AFTER_MS") ? (uint32_t)strtoul(getenv("POD_WATCH_AFTER_MS"), NULL, 0) : 0); }
+      const char* w = getenv("POD_ARGS_AT");
+      if (w) g_args_at_va = (uint32_t)strtoul(w, NULL, 0);
+      const char* g = getenv("POD_DUMP_ARM");
+      if (g) { g_dump_arm_va = (uint32_t)strtoul(g, NULL, 0); g_dump_armed = 0; } }
     if (!setup(argv[1])) return 1;
     printf("[*] runtime initialized.\n");
 

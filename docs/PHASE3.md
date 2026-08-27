@@ -209,32 +209,149 @@ game proper) — all without crashing.
 
 ## Current frontier 🚧 — first rendered frame
 
-The recompiled POD runs its **full engine** — up to **~34 million function calls** per
-run: WinMain's message loop, worker threads, DirectDraw + DirectInput init, and the
-sound/joystick subsystems (`waveOutGetDevCapsA`, `joyGetDevCapsA`). But no frame
-reaches the screen yet, for two reasons found while chasing it:
+The recompiled POD runs its **full engine** and **no longer crashes**: it completes
+both DirectDraw inits, loads the menu/track/car data and every circuit sound bank
+(`City`, `Galleria`, `Burrow`, `alderon`, `Sewer`, `Cocoon`, `HQ`, `Azthec`), and
+then sits in WinMain's message loop running its 555→565 pixel conversion
+(`sub_00475F00`) between waits. But no frame reaches the screen yet.
 
-1. **The intro/menu render is video, not DirectDraw.** POD draws its intro through
-   the **`DrawDibDraw` (MSVFW32) video path** decoding an **Indeo AVI** — both stubbed
-   — not by writing into a DirectDraw surface. Across a full run, no surface ever
-   holds non-zero pixels (the pump's `auto_present_dd` finds nothing to show), and
-   `Lock`/`Flip`/`Blt` are never called. So a visible frame needs the video subsystem
-   to actually decode + present (Indeo is a whole codec), or the game advanced past
-   the intro to a DirectDraw-rendered menu.
-2. **Intermittent error-exit.** Some runs reach the menu loop and run indefinitely;
-   others hit an error path — `PostQuitMessage` or a direct `ExitProcess(-1)` via the
-   Watcom CRT exit chain — in subsystem init. The multi-threaded timing is
-   non-deterministic, and several subsystems (WINMM audio, the video codec) are still
-   stubs whose return values can trip the game's own error checks.
+**What was in the way — a lifted function that fell off its end.** IDA carves
+Watcom's shared tails into separate functions, so a fragment like `sub_004C5734`
+(`add eax,0x19220; lea eax,[eax]`) has no `ret`: it falls through into
+`sub_004C573C`. The lifter emitted a bare `return` there, which skips the `ret`
+that would have popped the dummy return address — so the **caller's `esp` stayed 4
+bytes low for the rest of its body**. It surfaced two calls later as a stack struct
+read one slot off: `sub_00463734` (the encrypted data-cache writer) got a buffer
+pointer of `0x50000000` instead of `0x01152004` and faulted on the first XOR.
+`run_lift.py` now tail-dispatches to the fall-through address instead —
+`RECOMP_ITAIL(next)` pushes no return address, so the real `ret` at the end of the
+chain pops the caller's. **565 functions** were falling off their end this way.
+
+Nothing here was the "encrypted data-cache writer" being hard; it was one truncated
+function 224K calls earlier.
+
+## The menu is on screen 🎉
+
+![POD Gold's main menu, recompiled](menu.png)
+
+640x480x16, locked, drawn and flipped by the recompiled MMX rasterizer, presented
+with `StretchDIBits`. Dump one yourself with
+`POD_FRAME_DUMP=frame.bmp POD_FRAME_DUMP_N=90 pod_recomp.exe analysis/PODMMX.EXE --run`.
+
+**What was in the way — the game's WndProc was never called.** `DispatchMessageA`
+was a stub, `RegisterClassA` threw the `WNDCLASS` away, and `RegisterWindowMessageA`
+returned **0** — which is `WM_NULL`. POD drives its state machine with private
+messages it registers and posts to itself (`MSG_InitSnd`, `UserMsg_InitCD`,
+`UserMsg_PlayCD`, `USERMSG_INITERROR`, …), so all of them collapsed onto the same
+dead id and were then dropped by a pump that dispatched window messages to *our*
+host proc instead of the game's. The runtime now captures `lpfnWndProc` from
+`RegisterClassA`, hands window messages for the game's window back to the game,
+and `DispatchMessageA` calls POD's WndProc (`0x004A0DC8`) through the dispatch
+table. `SendMessageA`, `PostMessageA` and `DefWindowProcA` are real too.
+
+## The frame is clean — self-modifying code, and MMX
+
+The first menu frame was 10.6% salt-and-pepper speckle and the run died after ~60
+flips. Both had one cause.
+
+**POD's 2D blit library patches its own immediates.** The font blitter is
+
+```
+004D8470  mov  dword ptr [0x4D8499], ecx   ; the glyph width, into the cmp below
+004D847C  mov  dword ptr [0x4D84A1], edx   ; the surface pitch, into the add below
+...
+004D8497  cmp  ecx, 0x1234567              ; <- placeholder in the file
+004D849F  add  edi, 0x12d687               ; <- placeholder in the file
+```
+
+A lifted binary is static C, so those stores went nowhere and the loop ran with the
+author's placeholder sentinels: 19 million iterations per row, and a destination
+advancing 1.2 MB per line. It sprayed the whole frame and eventually walked a glyph
+pointer off the arena, which is what `sub_004A7260` was dying on. **27 immediates**
+across `0x004D81xx-0x004D85xx` are patched this way.
+
+`run_lift.py` now finds every absolute dword store into the code range up front
+(`find_patch_sites`), and `lift32` sources an immediate from `MEM32(site)` when the
+program writes onto it. Speckle went 10.56% → 2.79%, against 2.64% for a reference
+image expanded straight from the game's own 8bpp source and palette — i.e. what is
+left is picture detail, not error. Outside the areas the game redraws each frame,
+586 pixels of 307,200 differ from the source art.
+
+**MMX is implemented too.** Not a single MMX instruction was lifted — on the MMX
+build. `movq`, `punpck*`, `pmulhw`, `pmaddwd`, `paddsw`, the shifts and the rest now
+have a per-thread 64-bit register file in the runtime and a lifter that emits it.
+This did not change the menu (a 2D palettized path) but the software rasterizer is
+made of it.
+
+## The menu responds, and a race loads
+
+Keyboard input is wired: real host keys whenever our window is in the foreground,
+plus `POD_KEYS="6000:RETURN,11000:DOWN"` — a millisecond timeline, so a headless run
+can walk the menus. Keys reach the game two ways, because POD reads them two ways:
+a 256-byte DirectInput state array (scancodes come from `MapVirtualKey`, so DIK_*
+needs no table) and posted `WM_KEYDOWN`/`WM_KEYUP`.
+
+RETURN on **ONE PLAYER** works. POD switches to its loading screen and loads the
+Downtown circuit for real:
+
+```
+Data/Binary/MIMG/62.img              Data/Binary/resson/DownTown.MEG
+Data/Binary/Circuits/DownTown.BL3    Data/Binary/resson/bakar.MEG
+Data/Binary/Polices/Habilage.BP3     ... dopple, shivan, saber, scorp, arc, av1
+Data/Binary/Scripts/habi.bin
+```
+
+That is the circuit geometry, the HUD skin, and all seven cars' sound banks.
+
+> The `[io]` log was capped at 80 lines, which is why the whole race load looked
+> like it never happened. `POD_IO_LOG=0` prints every open.
+
+## Current frontier 🚧 — one overflowed `fistp` short of a race
+
+POD does not even need the keypress: the menu has an attract-mode timeout and starts
+Downtown on its own after a few seconds. Either way it gets as far as scene setup and
+then hits its own sanity check.
+
+The chain, traced end to end:
+
+1. `sub_004247F8` builds a face normal — two edge vectors, each normalised, then
+   crossed. It writes one whose z is **`0x80000000`**. That is x87's *integer
+   indefinite*: an earlier `fistp` was handed a value too big for 32 bits. Sampled
+   triangles have perfectly sane 16.16 vertices (`FF03D6DA FEFA15B8 0000DD18`), so
+   only some inputs blow up.
+2. `sub_004D502D` (squared length) is then handed that vector, takes its
+   large-magnitude path and returns `0x80000000`.
+3. `sub_00423BC0` (normalise, with a unit-axis fallback when the length is zero)
+   sees a *non-zero* length, so it divides — and every component of a small vector
+   divided by `0x80000000` rounds to zero. A clean `(0, 0, 1.0)` becomes `(0, 0, 0)`.
+4. That zero reaches the camera basis. `sub_0041DE6C` differences two points through
+   it, `sub_00423E2C` cannot normalise the result, and POD calls its own error
+   reporter `sub_00492FAC("3D", "NORM")` — which `SendMessage`s the message to the
+   WndProc and then `exit(-1)`s. The process parks in that modal path with the
+   loading screen frozen on screen.
+
+The camera copy itself is *not* the bug: right after `sub_0041D0C0` runs, the three
+basis vectors are a clean identity matrix. The zero arrives later, from step 3.
+
+**Next step:** catch the `fistp` in step 1 — poll `sub_004247F8`'s inputs at the
+moment its output goes indefinite. Note our FPU model is a C `double`, where x87 is
+80-bit extended; a value that overflows one and not the other would look exactly
+like this, so the precision model is a suspect as well as the arithmetic.
+
+Also still open: a stray sprite in the top-left corner, the fifth menu button draws
+its plate but not its label, and the intro video is stubbed. POD's intro is an **IV41 (Indeo 4.1) AVI**
+  through `DrawDibDraw`/`AVIFile*`. It ships its own codec —
+  `game_files/INSTALL/IR41_32.DLL`, a 32-bit PE VFW driver exporting `DriverProc` —
+  and this build is 32-bit, so the lazy path is to bridge `MSVFW32`/`AVIFIL32` to
+  the real Windows DLLs (still present in SysWOW64) and `ICInstall` the shipped
+  driver, rather than lift a codec. `encarta/tools/indeo/runtime/ir32_vfw.c` is the
+  working reference for the ICM plumbing; `gta/src/engine/iat_bridge.c` for the
+  generic real-API bridge.
 
 **Infrastructure in place for when rendering engages:** `host_present16` (16bpp 565
 StretchDIBits), a DirectDraw-surface registry + `auto_present_dd` in the message pump
 (presents whichever surface has content), and per-thread call-ring + null-call/quit
 diagnostics.
-
-**Next steps:** harden the WINMM/joystick/video stubs so the game stops error-exiting;
-make the intro video either present real frames or report "finished" so POD advances
-to its DirectDraw menu; then `auto_present_dd` should show the first frame.
 
 **Minor:** `ICALL: unresolved 0x004D23A3` (init-table funcptr; indirect target).
 
@@ -242,6 +359,42 @@ to its DirectDraw menu; then `auto_present_dd` should show the first frame.
 
 - `-DRECOMP_TRACE` (on in the Debug build) records every function entry in a ring
   buffer; `recomp_dump_trace()` prints the last 256 on a fault or watchdog trip.
+- **Shadow call stack.** The lifted `ret` pops a dummy return address, so the host
+  stack carries no usable backtrace. `RECOMP_CALL`/`RECOMP_ICALL` push the caller's
+  VA onto a per-thread array; `recomp_dump_stack()` prints it on a fault. This is
+  what named the `0x0049FE3C → … → 0x00463734` chain above in one run.
+- **Stack-leak check.** A callee must not return below the caller's `esp`.
+  `RECOMP_STACK_CHECK` reports each offending (caller, callee) pair once — how the
+  fall-off-the-end bug was found. One known leak remains: `0x004A0420` recursing
+  into itself, 4 bytes.
+- The VEH names the faulting address: which module it is in, or which guest VA it
+  maps to inside the arena.
+- **Write watchpoint.** `POD_WATCH_ROW=<n>` makes the page holding that scanline of
+  the back buffer read-only and reports, with a call stack, every distinct function
+  that writes to it. Nothing in a lifted binary announces which function is the
+  blitter; this is how `sub_0049C81C` (background), `sub_0049CA50` (sprites) and
+  `sub_00490940` (text) were each identified.
+- **Frame snapshots.** `POD_FRAME_DUMP=<file> POD_FRAME_DUMP_N=<n>` writes the nth
+  presented frame as a BMP. `POD_DUMP_AFTER=<va>` (optionally gated by
+  `POD_DUMP_ARM=<va>`) snapshots the back buffer the moment that function returns,
+  which is how one drawing pass gets separated from the next.
+- **All threads at once.** `recomp_dump_all_rings()` prints every guest thread's
+  shadow call stack and recent history, not just the calling one — a hang is a
+  question about the threads you are *not* in, and this is what showed the game
+  thread parked inside POD's error reporter.
+- **`POD_ARGS_AT=<va>`** prints a function's arguments on entry: registers (Watcom
+  passes in eax/edx/ebx/ecx), the stack, anything that points at a printable string,
+  and what pointer-shaped registers point at. POD names its own failures through it
+  — `("3D","NORM")`, `("SOUND","UNKNOWN")`, `"DownTown.lev"`.
+- **`POD_POLL_VA=<va>`** samples three dwords on every function entry and reports
+  each change with the call history around it. Slower than the page trap and it
+  cannot miss a write, which is what a busy page needs. This is what followed the
+  camera basis from identity, to zero, back to identity.
+- **`POD_RET_PRINT`** with `POD_DUMP_AFTER=<va>` prints a function's return value —
+  the only way to see what a lifted leaf actually computed.
+- `tools/seed_icall_targets.py` feeds a run's `ICALL: unresolved` reports back into
+  the function catalogue: a function referenced only by a pointer in a table is
+  invisible to IDA and to the literal scan, but the runtime names it.
 - A watchdog in `recomp_lookup_import` dumps the trace and exits after 64 repeated
   unresolved indirect calls (a wild-pointer loop), instead of spinning forever.
 - A VEH handler reports access violations with register + indirect-call context.

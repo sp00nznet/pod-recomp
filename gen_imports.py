@@ -95,6 +95,7 @@ MANUAL = {
  'CreateFileA','ReadFile','WriteFile','SetFilePointer','CloseHandle','GetFileSize','GetFileType',
  'GetPrivateProfileStringA','GetPrivateProfileIntA','WritePrivateProfileStringA',
  'CreateWindowExA','GetDC','ReleaseDC','PeekMessageA','GetMessageA','StretchBlt',
+ 'RegisterWindowMessageA','RegisterClassA','DispatchMessageA','SendMessageA','PostMessageA','DefWindowProcA',
  'MessageBoxA','timeGetTime','LoadLibraryA','GetProcAddress','ExitProcess','PostQuitMessage','PostThreadMessageA',
  'TlsAlloc','TlsFree','TlsSetValue','TlsGetValue',
  'DirectDrawCreate','DirectInputCreateA','GetDriveTypeA','GetVolumeInformationA','VirtualQuery',

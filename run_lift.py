@@ -85,9 +85,9 @@ def lift_function_linear(lifter, name, instructions, leaders):
     # _st/_fp_top/_fpu_cw are GLOBAL (x87 stack is shared across calls) -- see
     # recomp_types.h. Only per-function scratch is declared here.
     lines=[f'void {name}(void) {{',
-           '    uint32_t ebp = 0;',
            '    int _fpu_cmp = 0;','    uint32_t _cf = 0;','    int _df = 1;',
            '    uint32_t _flag_a = 0, _flag_b = 0;',
+           '    uint32_t _flag_k = FK_NONE;  /* which instruction wrote them */',
            '    uint32_t _itail_tgt = 0;',
            f'    RECOMP_ENTER(0x{va}u);','']
     lifter._flag_state=None
@@ -96,12 +96,42 @@ def lift_function_linear(lifter, name, instructions, leaders):
     # the local dispatch below can reach it. Otherwise just label block leaders.
     has_indirect = any(i.is_uncond_jump and i.get_branch_target() is None
                        for i in instructions)
+    # We walk the function linearly, so the flag state at each instruction is
+    # whatever the PREVIOUS one left -- correct on a fallthrough edge (a jcc does
+    # not touch the flags) and wrong at any block a jump can reach, whose real
+    # predecessors may each have set the flags with a different instruction.
+    # POD hits this in its resource dispatcher: `cmp edx, 0x50000000 / jae X /
+    # xor edx, edx / X: jbe ...`, where the jbe belongs to the cmp but linearly
+    # follows the xor, so it lifted to CMP_BE(0, 0) -- always true. Clearing the
+    # state at those targets makes the lifter emit recomp_cond(), which evaluates
+    # the condition from _flag_k at runtime. (pcrecomp 28738f0)
+    # ponytail: an indirect jump can land anywhere, so those functions reset at
+    # every instruction -- correct, but it costs a recomp_cond() call at each of
+    # their jccs. Narrow it to the switch's real arms if it ever shows up hot.
+    jump_targets = {t for t in (i.get_branch_target() for i in instructions
+                                if i.is_jump) if t is not None}
     for insn in instructions:
         if has_indirect or insn.address in leaders:
             lines.append(f'L_{insn.address:08X}:')
+        if insn.address in jump_targets or has_indirect:
+            lifter._flag_state = None
         for line in lifter.lift_instruction(insn): lines.append(f'    {line}')
-    if instructions and not instructions[-1].is_ret:
-        lines.append('    return; /* end of function */')
+    last = instructions[-1] if instructions else None
+    if last and not last.is_ret:
+        if last.is_uncond_jump or last.mnemonic == 'int3':
+            lines.append('    return; /* end of function */')
+        else:
+            # The function falls off its end into the next one. Watcom shares
+            # tails, and IDA carves each entry into its own function, so this is
+            # routine: sub_004C5734 is `add eax,0x19220 / lea eax,[eax]` and then
+            # runs on into sub_004C573C. A bare `return` here skips the ret that
+            # would have popped the dummy return address, so the CALLER's esp
+            # stays 4 low -- every local it addresses off esp from then on is one
+            # slot out, and it surfaces far away as a struct read at the wrong
+            # offset. Tail-dispatch instead: no return address is pushed, and the
+            # real ret at the end of the chain pops the caller's.
+            lines.append(f'    RECOMP_ITAIL(0x{last.end_address:08X}u); '
+                         f'return; /* falls through into 0x{last.end_address:08X} */')
 
     # Intra-function indirect jumps (jump tables / switch statements) lift to
     # RECOMP_ITAIL(<runtime expr>), but the dispatch table only knows function
@@ -134,6 +164,29 @@ def lift_function_linear(lifter, name, instructions, leaders):
     out = re.sub(r'CMP_(\w+)\(_fpu_cmp\)',
                  lambda m: f'((_fpu_cmp) {FPU_CMP.get(m.group(1), "==")} 0)', out)
     return out
+
+
+def find_patch_sites(md, code_data, cs, ce, fns):
+    """VAs inside the code that the program itself writes a dword to.
+
+    Only absolute stores count -- `mov dword ptr [0x4D8499], ecx`. A store
+    through a register could go anywhere and is not something a static lift can
+    resolve; if one ever matters it will show up as a wrong constant, the same
+    way this one did.
+    """
+    from capstone.x86 import X86_OP_MEM
+    sites=set()
+    for addr, end in fns:
+        end=min(end, ce)
+        if end<=addr: continue
+        off=addr-cs
+        for insn in md.disasm(code_data[off:off+(end-addr)], addr):
+            if insn.mnemonic!='mov' or not insn.operands: continue
+            d=insn.operands[0]
+            if (d.type==X86_OP_MEM and d.size==4 and d.mem.base==0
+                    and d.mem.index==0 and cs <= d.mem.disp < ce):
+                sites.add(d.mem.disp & 0xFFFFFFFF)
+    return sites
 
 
 def write_chunk(out, idx, funcs):
@@ -170,7 +223,21 @@ def main():
     print(f'[*] seeded {len(fns)} functions from IDA catalog (with exact bounds)')
 
     md=Cs(CS_ARCH_X86, CS_MODE_32); md.detail=True
-    lifter=Lifter(iat_map=iat)
+
+    # Self-modifying code. POD's font blitter patches two of its own immediates
+    # before it runs -- `mov [0x4D8499], ecx` writes the glyph width into the
+    # `cmp ecx, 0x1234567` a few bytes below, and `mov [0x4D84A1], edx` writes
+    # the surface pitch into `add edi, 0x12d687`. Those placeholder constants are
+    # what is in the file, so lifted C ran the inner loop 19 million times per row
+    # and advanced the destination by 1.2 MB, spraying the whole frame. Find every
+    # store into the code range first; the lifter then sources those immediates
+    # from memory instead of baking the placeholder in.
+    patch_sites=find_patch_sites(md, code_data, cs, ce, fns)
+    if patch_sites:
+        print(f'[*] {len(patch_sites)} self-modified immediate(s): '
+              + ', '.join(f'0x{s:08X}' for s in sorted(patch_sites)))
+
+    lifter=Lifter(iat_map=iat, patch_sites=patch_sites)
     all_entries=[]; errors=0; idx=0; chunk=[]; t0=time.time()
     for addr, end in fns:
         end = min(end, ce)

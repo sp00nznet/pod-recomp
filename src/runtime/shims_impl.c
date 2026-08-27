@@ -281,6 +281,54 @@ void imp_WritePrivateProfileStringA(void){ /* (sect,key,val,file) */
     RET(host_ini_write(ARG(0), ARG(1), ARG(2), ARG(3))); STDRET(4);
 }
 
+/* POD registers a private window message and posts it to itself to drive its
+ * state machine. The stub returned 0, which is WM_NULL: every such post was
+ * swallowed and the machine never advanced. Hand out real IDs from the system
+ * range instead -- same string, same ID, as the API promises. */
+void imp_RegisterWindowMessageA(void) {  /* (lpString) */
+    static struct { uint32_t va; uint32_t id; } seen[16];
+    static uint32_t n = 0, next_id = 0xC000u;
+    uint32_t s = ARG(0);
+    for (uint32_t i = 0; i < n; i++)
+        if (seen[i].va == s) { RET(seen[i].id); STDRET(1); return; }
+    uint32_t id = next_id++;
+    if (n < 16) { seen[n].va = s; seen[n].id = id; n++; }
+    fprintf(stderr, "[msg] RegisterWindowMessageA(\"%s\") -> 0x%04X\n",
+            (const char*)(uintptr_t)ADDR(s), id);
+    RET(id); STDRET(1);
+}
+
+/* ---- window messages: route them into POD's own WndProc ----
+ * DispatchMessageA was a stub, so the game's window procedure never ran: every
+ * WM_ and every private UserMsg_* it posted to itself was dropped. */
+extern uint32_t g_guest_wndproc;
+extern uint32_t call_guest_wndproc(uint32_t hwnd, uint32_t msg, uint32_t wp, uint32_t lp);
+
+void imp_RegisterClassA(void) {   /* (const WNDCLASSA*) */
+    uint32_t wc = ARG(0);
+    if (wc) {
+        g_guest_wndproc = MEM32(wc + 4);   /* lpfnWndProc */
+        fprintf(stderr, "[msg] RegisterClassA: WndProc = 0x%08X\n", g_guest_wndproc);
+    }
+    RET(0xC0DE); STDRET(1);           /* a non-zero class atom */
+}
+void imp_DispatchMessageA(void) {  /* (const MSG*) */
+    uint32_t m = ARG(0);
+    uint32_t r = m ? call_guest_wndproc(MEM32(m), MEM32(m + 4), MEM32(m + 8), MEM32(m + 12)) : 0;
+    RET(r); STDRET(1);
+}
+void imp_SendMessageA(void) {      /* (hwnd, msg, wParam, lParam) -- synchronous */
+    RET(call_guest_wndproc(ARG(0), ARG(1), ARG(2), ARG(3))); STDRET(4);
+}
+void imp_PostMessageA(void) {      /* (hwnd, msg, wParam, lParam) -- queued */
+    /* Onto the real queue, so it comes back through PeekMessage in order with
+     * the input and paint messages rather than jumping ahead of them. */
+    RET(host_post_window_message(ARG(1), ARG(2), ARG(3))); STDRET(4);
+}
+void imp_DefWindowProcA(void) {    /* (hwnd, msg, wParam, lParam) */
+    RET(host_def_window_proc(ARG(1), ARG(2), ARG(3))); STDRET(4);
+}
+
 /* ---- display: real window + DIB blit ---- */
 void imp_CreateWindowExA(void) {  /* (exStyle, cls, name, style, x,y,w,h, parent, menu, inst, param) */
     RET(host_create_window(MEM32(g_esp + 12))); STDRET(12);

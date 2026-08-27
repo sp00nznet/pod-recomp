@@ -80,11 +80,20 @@ void pod_obj_close(uint32_t gh);
 
 /* Diagnostics (recomp_runtime.c, RECOMP_TRACE). */
 void recomp_dump_tls_ring(const char* why);
+void recomp_dump_all_rings(const char* why);
 
 /* Generated bridge tables (imports_gen.c). */
 extern const recomp_dispatch_entry_t pod_import_bridges[];
 extern const uint32_t pod_import_bridge_count;
 extern const uint32_t pod_iat_slots[];
 extern const uint32_t pod_iat_slot_count;
+
+/* One-shot PAGE_GUARD watchpoint: names the code that next touches this VA. */
+void host_watch_page(uint32_t va);
+void host_watch_tick(void);
+void host_watch_va(uint32_t va, uint32_t len, uint32_t after_ms);
+int  host_key_state(uint32_t buf, uint32_t n);
+void host_keys_init(void);
+void host_keys_poll(void);
 
 #endif /* POD_IMPORTS_H */

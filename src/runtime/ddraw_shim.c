@@ -249,8 +249,13 @@ static void dv_GetProperty(void)   { RET(DI_OK); STDRET(3); }
 static void dv_SetProperty(void)   { RET(DI_OK); STDRET(3); }
 static void dv_Acquire(void)       { RET(DI_OK); STDRET(1); }
 static void dv_Unacquire(void)     { RET(DI_OK); STDRET(1); }
-static void dv_GetDeviceState(void){ uint32_t n=ARG(1),p=ARG(2); for(uint32_t i=0;p&&i<n;i++) MEM8(p+i)=0; RET(DI_OK); STDRET(3); }
-static void dv_GetDeviceData(void) { if(ARG(3)) MEM32(ARG(3))=0; RET(DI_OK); STDRET(5); }   /* 0 events */
+/* A 256-byte state buffer is the keyboard; anything else (mouse, joystick) is
+ * still reported as idle. */
+static void dv_GetDeviceState(void){ uint32_t n=ARG(1),p=ARG(2);
+    { static uint32_t k=0; if(k++<3) DLOG("GetDeviceState n=%u\n", n); }
+    if (!host_key_state(p, n)) { for(uint32_t i=0;p&&i<n;i++) MEM8(p+i)=0; }
+    RET(DI_OK); STDRET(3); }
+static void dv_GetDeviceData(void) { { static uint32_t k=0; if(k++<3) DLOG("GetDeviceData sz=%u max=%u\n", ARG(1), ARG(3)?MEM32(ARG(3)):0); } if(ARG(3)) MEM32(ARG(3))=0; RET(DI_OK); STDRET(5); }
 static void dv_SetDataFormat(void) { RET(DI_OK); STDRET(2); }
 static void dv_SetEventNotif(void) { RET(DI_OK); STDRET(2); }
 static void dv_SetCoopLevel(void)  { RET(DI_OK); STDRET(3); }

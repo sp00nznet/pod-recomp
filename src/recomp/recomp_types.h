@@ -40,8 +40,12 @@
 /* Volatile (caller-saved) registers */
 extern RECOMP_TLS uint32_t g_eax, g_ecx, g_edx, g_esp;
 
-/* Callee-saved registers (also global for implicit parameter passing) */
-extern RECOMP_TLS uint32_t g_ebx, g_esi, g_edi;
+/* Callee-saved registers (also global for implicit parameter passing).
+ * ebp is one of them, not a per-function local: a function entered part-way
+ * through (a shared epilogue, a switch arm the disassembler promoted) only
+ * works if the caller's frame survives the call, and real x86 has exactly one
+ * ebp -- FPO functions simply pass the caller's through. (pcrecomp bd59335) */
+extern RECOMP_TLS uint32_t g_ebx, g_esi, g_edi, g_ebp;
 
 /* The x87 FPU stack is per-thread but GLOBAL across calls on that thread: helpers
  * like __ftol receive their argument on the FPU stack from the caller, and the
@@ -83,7 +87,8 @@ extern const uint32_t recomp_dispatch_count;
 #define _st g_st
 #define _fp_top g_fp_top
 #define _fpu_cw g_fpu_cw
-/* ebp is declared local in each function */
+#define ebp g_ebp
+#define _mm g_mm          /* MMX register file (see below) */
 #define _seg_cs g_seg_cs
 #define _seg_ds g_seg_ds
 #define _seg_es g_seg_es
@@ -145,9 +150,15 @@ static inline void MEMSET32(void* dst, uint32_t val, uint32_t count) {
  * Stack Operations
  * ============================================================ */
 
+/* Evaluate the operand BEFORE moving esp. x86 reads the source of
+ * push dword ptr [esp+N] at the OLD esp; decrementing first makes every
+ * esp-relative push read one slot too low -- which lands on the return
+ * address the caller pushed, so the callee sees RECOMP_RETADDR as an
+ * argument. (pcrecomp ddee2a4) */
 #define PUSH32(sp, val) do { \
+    uint32_t _pv = (uint32_t)(val); \
     (sp) -= 4; \
-    MEM32(sp) = (uint32_t)(val); \
+    MEM32(sp) = _pv; \
 } while(0)
 
 #define POP32_VAL(sp) ({ \
@@ -221,6 +232,94 @@ static inline uint32_t _pop32(uint32_t* sp) {
 /* Bit test (from bt) */
 #define BT_CF(base, bit) (((uint32_t)(base) >> ((uint32_t)(bit) & 31)) & 1)
 
+/*
+ * Runtime flag kind. (pcrecomp 28738f0)
+ *
+ * A jcc is normally paired with its flag-setter at lift time, but the setter
+ * is not always statically known: a branch into a block whose predecessors set
+ * the flags with different instructions has no single setter to pair with. The
+ * lifter used to fall back to a stale _cf at those sites, which made the branch
+ * read whatever carry happened to be lying around.
+ *
+ * _flag_a/_flag_b already survive across blocks -- they are plain function
+ * locals -- so recording which *kind* of instruction wrote them is enough to
+ * evaluate any condition exactly, wherever the branch turns up.
+ */
+enum {
+    FK_NONE = 0,
+    FK_CMP,     /* cmp, sub, dec  -- a - b            */
+    FK_ADD,     /* add, inc       -- a + b            */
+    FK_TEST,    /* and/or/xor/test -- a & b, CF=OF=0  */
+    FK_BT,      /* bt             -- CF = bit b of a  */
+    FK_FCOM     /* fcom           -- a is -1/0/1      */
+};
+
+enum {
+    CC_E = 0, CC_NE, CC_S, CC_NS, CC_G, CC_GE, CC_L, CC_LE,
+    CC_A, CC_AE, CC_B, CC_BE, CC_O, CC_NO
+};
+
+static inline int recomp_cond(uint32_t kind, uint32_t a, uint32_t b, int cc) {
+    uint32_t r;
+    int zf, sf, cf, of;
+
+    if (kind == FK_FCOM) {
+        int32_t v = (int32_t)a;          /* -1 less, 0 equal, 1 greater */
+        switch (cc) {
+        case CC_E:                return v == 0;
+        case CC_NE:               return v != 0;
+        case CC_B:  case CC_L:    return v <  0;
+        case CC_BE: case CC_LE:   return v <= 0;
+        case CC_A:  case CC_G:    return v >  0;
+        case CC_AE: case CC_GE:   return v >= 0;
+        default:                  return 0;
+        }
+    }
+
+    switch (kind) {
+    case FK_ADD:
+        r  = a + b;
+        cf = (r < a);
+        of = (int)((~(a ^ b) & (a ^ r)) >> 31);
+        break;
+    case FK_TEST:
+        r  = a & b;
+        cf = 0;
+        of = 0;
+        break;
+    case FK_BT:
+        r  = 0;
+        cf = (int)((a >> (b & 31)) & 1u);
+        of = 0;
+        break;
+    default:                              /* FK_CMP and FK_NONE */
+        r  = a - b;
+        cf = (a < b);
+        of = (int)(((a ^ b) & (a ^ r)) >> 31);
+        break;
+    }
+    zf = (r == 0);
+    sf = (int)(r >> 31);
+
+    switch (cc) {
+    case CC_E:   return zf;
+    case CC_NE:  return !zf;
+    case CC_S:   return sf;
+    case CC_NS:  return !sf;
+    case CC_G:   return !zf && (sf == of);
+    case CC_GE:  return sf == of;
+    case CC_L:   return sf != of;
+    case CC_LE:  return zf || (sf != of);
+    case CC_A:   return !cf && !zf;
+    case CC_AE:  return !cf;
+    case CC_B:   return cf;
+    case CC_BE:  return cf || zf;
+    case CC_O:   return of;
+    case CC_NO:  return !of;
+    }
+    return 0;
+}
+
 /* ============================================================
  * Bit Manipulation
  * ============================================================ */
@@ -229,6 +328,167 @@ static inline uint32_t _pop32(uint32_t* sp) {
 #define ROR32(val, n) (((uint32_t)(val) >> ((n) & 31)) | ((uint32_t)(val) << (32 - ((n) & 31))))
 #define BSWAP32(val)  ( (((val) & 0xFF) << 24) | (((val) & 0xFF00) << 8) | \
                         (((val) >> 8) & 0xFF00) | (((val) >> 24) & 0xFF) )
+
+/* ============================================================
+ * MMX
+ *
+ * Eight 64-bit registers holding packed bytes/words/dwords. On real hardware
+ * they alias the x87 stack, which is why MMX code must `emms` before touching
+ * the FPU again; we keep the two apart, so `emms` is a no-op here and code that
+ * deliberately interleaved them would behave differently. POD does not: it is
+ * the MMX build, and its rasterizer is a well-formed MMX block per span.
+ *
+ * Per-thread, like the rest of the register file.
+ * ============================================================ */
+
+extern RECOMP_TLS uint64_t g_mm[8];
+
+#define MM_W(v, i)  ((int16_t)((uint64_t)(v) >> ((i) * 16)))
+#define MM_D(v, i)  ((int32_t)((uint64_t)(v) >> ((i) * 32)))
+#define MM_PUT_W(i, x) ((uint64_t)(uint16_t)(x) << ((i) * 16))
+#define MM_PUT_D(i, x) ((uint64_t)(uint32_t)(x) << ((i) * 32))
+
+static inline int16_t mmx_sat16(int32_t v) {
+    return (int16_t)(v > 32767 ? 32767 : v < -32768 ? -32768 : v);
+}
+
+static inline uint64_t mmx_paddw(uint64_t a, uint64_t b) {
+    uint64_t r = 0;
+    for (int i = 0; i < 4; i++) r |= MM_PUT_W(i, MM_W(a, i) + MM_W(b, i));
+    return r;
+}
+static inline uint64_t mmx_psubw(uint64_t a, uint64_t b) {
+    uint64_t r = 0;
+    for (int i = 0; i < 4; i++) r |= MM_PUT_W(i, MM_W(a, i) - MM_W(b, i));
+    return r;
+}
+static inline uint64_t mmx_paddd(uint64_t a, uint64_t b) {
+    return MM_PUT_D(0, MM_D(a, 0) + MM_D(b, 0)) | MM_PUT_D(1, MM_D(a, 1) + MM_D(b, 1));
+}
+static inline uint64_t mmx_psubd(uint64_t a, uint64_t b) {
+    return MM_PUT_D(0, MM_D(a, 0) - MM_D(b, 0)) | MM_PUT_D(1, MM_D(a, 1) - MM_D(b, 1));
+}
+static inline uint64_t mmx_paddsw(uint64_t a, uint64_t b) {
+    uint64_t r = 0;
+    for (int i = 0; i < 4; i++) r |= MM_PUT_W(i, mmx_sat16(MM_W(a, i) + MM_W(b, i)));
+    return r;
+}
+static inline uint64_t mmx_psubsw(uint64_t a, uint64_t b) {
+    uint64_t r = 0;
+    for (int i = 0; i < 4; i++) r |= MM_PUT_W(i, mmx_sat16(MM_W(a, i) - MM_W(b, i)));
+    return r;
+}
+/* High half of each signed 16x16 product -- the fixed-point multiply an MMX
+ * rasterizer scales colour and texture coordinates with. */
+static inline uint64_t mmx_pmulhw(uint64_t a, uint64_t b) {
+    uint64_t r = 0;
+    for (int i = 0; i < 4; i++)
+        r |= MM_PUT_W(i, (int16_t)(((int32_t)MM_W(a, i) * MM_W(b, i)) >> 16));
+    return r;
+}
+static inline uint64_t mmx_pmullw(uint64_t a, uint64_t b) {
+    uint64_t r = 0;
+    for (int i = 0; i < 4; i++) r |= MM_PUT_W(i, (int16_t)((int32_t)MM_W(a, i) * MM_W(b, i)));
+    return r;
+}
+/* Two dwords, each the sum of a neighbouring pair of 16x16 products. */
+static inline uint64_t mmx_pmaddwd(uint64_t a, uint64_t b) {
+    uint64_t r = 0;
+    for (int i = 0; i < 2; i++)
+        r |= MM_PUT_D(i, (int32_t)MM_W(a, i*2) * MM_W(b, i*2)
+                       + (int32_t)MM_W(a, i*2+1) * MM_W(b, i*2+1));
+    return r;
+}
+/* Interleave: the low (or high) halves of a and b, a's element first. */
+static inline uint64_t mmx_punpcklwd(uint64_t a, uint64_t b) {
+    return MM_PUT_W(0, MM_W(a,0)) | MM_PUT_W(1, MM_W(b,0))
+         | MM_PUT_W(2, MM_W(a,1)) | MM_PUT_W(3, MM_W(b,1));
+}
+static inline uint64_t mmx_punpckhwd(uint64_t a, uint64_t b) {
+    return MM_PUT_W(0, MM_W(a,2)) | MM_PUT_W(1, MM_W(b,2))
+         | MM_PUT_W(2, MM_W(a,3)) | MM_PUT_W(3, MM_W(b,3));
+}
+static inline uint64_t mmx_punpcklbw(uint64_t a, uint64_t b) {
+    uint64_t r = 0;
+    for (int i = 0; i < 4; i++) {
+        r |= (uint64_t)(uint8_t)(a >> (i*8)) << (i*16);
+        r |= (uint64_t)(uint8_t)(b >> (i*8)) << (i*16 + 8);
+    }
+    return r;
+}
+static inline uint64_t mmx_punpckhbw(uint64_t a, uint64_t b) {
+    uint64_t r = 0;
+    for (int i = 0; i < 4; i++) {
+        r |= (uint64_t)(uint8_t)(a >> (32 + i*8)) << (i*16);
+        r |= (uint64_t)(uint8_t)(b >> (32 + i*8)) << (i*16 + 8);
+    }
+    return r;
+}
+static inline uint64_t mmx_punpckldq(uint64_t a, uint64_t b) {
+    return (uint64_t)(uint32_t)a | ((uint64_t)(uint32_t)b << 32);
+}
+static inline uint64_t mmx_punpckhdq(uint64_t a, uint64_t b) {
+    return (uint64_t)(uint32_t)(a >> 32) | ((uint64_t)(uint32_t)(b >> 32) << 32);
+}
+/* Shifts. A count wider than the element is not a wrapped shift on x86: the
+ * logical forms produce zero and the arithmetic ones produce the sign. */
+static inline uint64_t mmx_psllq(uint64_t a, uint32_t c) { return c > 63 ? 0 : a << c; }
+static inline uint64_t mmx_psrlq(uint64_t a, uint32_t c) { return c > 63 ? 0 : a >> c; }
+static inline uint64_t mmx_psllw(uint64_t a, uint32_t c) {
+    uint64_t r = 0;
+    if (c > 15) return 0;
+    for (int i = 0; i < 4; i++) r |= MM_PUT_W(i, (uint16_t)MM_W(a, i) << c);
+    return r;
+}
+static inline uint64_t mmx_psrlw(uint64_t a, uint32_t c) {
+    uint64_t r = 0;
+    if (c > 15) return 0;
+    for (int i = 0; i < 4; i++) r |= MM_PUT_W(i, (uint16_t)MM_W(a, i) >> c);
+    return r;
+}
+static inline uint64_t mmx_psraw(uint64_t a, uint32_t c) {
+    uint64_t r = 0;
+    if (c > 15) c = 15;
+    for (int i = 0; i < 4; i++) r |= MM_PUT_W(i, (int16_t)(MM_W(a, i) >> c));
+    return r;
+}
+static inline uint64_t mmx_pslld(uint64_t a, uint32_t c) {
+    if (c > 31) return 0;
+    return MM_PUT_D(0, (uint32_t)MM_D(a,0) << c) | MM_PUT_D(1, (uint32_t)MM_D(a,1) << c);
+}
+static inline uint64_t mmx_psrld(uint64_t a, uint32_t c) {
+    if (c > 31) return 0;
+    return MM_PUT_D(0, (uint32_t)MM_D(a,0) >> c) | MM_PUT_D(1, (uint32_t)MM_D(a,1) >> c);
+}
+static inline uint64_t mmx_psrad(uint64_t a, uint32_t c) {
+    if (c > 31) c = 31;
+    return MM_PUT_D(0, MM_D(a,0) >> c) | MM_PUT_D(1, MM_D(a,1) >> c);
+}
+/* Pack with saturation, a's elements low. */
+static inline uint64_t mmx_packssdw(uint64_t a, uint64_t b) {
+    return MM_PUT_W(0, mmx_sat16(MM_D(a,0))) | MM_PUT_W(1, mmx_sat16(MM_D(a,1)))
+         | MM_PUT_W(2, mmx_sat16(MM_D(b,0))) | MM_PUT_W(3, mmx_sat16(MM_D(b,1)));
+}
+static inline uint64_t mmx_packuswb(uint64_t a, uint64_t b) {
+    uint64_t r = 0;
+    for (int i = 0; i < 4; i++) {
+        int16_t v = MM_W(a, i); uint8_t p = (uint8_t)(v < 0 ? 0 : v > 255 ? 255 : v);
+        r |= (uint64_t)p << (i * 8);
+        v = MM_W(b, i);         p = (uint8_t)(v < 0 ? 0 : v > 255 ? 255 : v);
+        r |= (uint64_t)p << (32 + i * 8);
+    }
+    return r;
+}
+static inline uint64_t mmx_pcmpeqw(uint64_t a, uint64_t b) {
+    uint64_t r = 0;
+    for (int i = 0; i < 4; i++) r |= MM_PUT_W(i, MM_W(a,i) == MM_W(b,i) ? 0xFFFF : 0);
+    return r;
+}
+static inline uint64_t mmx_pcmpgtw(uint64_t a, uint64_t b) {
+    uint64_t r = 0;
+    for (int i = 0; i < 4; i++) r |= MM_PUT_W(i, MM_W(a,i) > MM_W(b,i) ? 0xFFFF : 0);
+    return r;
+}
 
 /* ============================================================
  * FPU Stack Helpers
@@ -271,6 +531,11 @@ static inline void CPUID(uint32_t eax_val, uint32_t ebx_val, uint32_t ecx_val, u
  * Indirect Call Dispatch
  * ============================================================ */
 
+/* The VA of the function currently executing (see RECOMP_ENTER below); an
+ * unresolved dispatch is far more useful with its caller named. Per-thread,
+ * like the rest of the CPU state. (pcrecomp a22c19d) */
+extern RECOMP_TLS uint32_t g_cur_func;
+
 /* ICALL trace ring buffer for crash diagnostics */
 #define ICALL_TRACE_SIZE 32
 extern uint32_t g_icall_trace[ICALL_TRACE_SIZE];
@@ -291,10 +556,54 @@ recomp_func_t recomp_lookup_import(uint32_t va);    /* import bridges */
 #define RECOMP_RETADDR 0xDEAD0000u
 #endif
 
+/* Shadow call stack (bring-up only, -DRECOMP_TRACE). The lifted `ret` pops a
+ * dummy return address, so the host stack carries no usable backtrace: without
+ * this a fault names the function it happened in and nothing about how it got
+ * there. Per-thread, like the rest of the CPU state. */
+#ifdef RECOMP_TRACE
+#define RECOMP_STACK_SIZE 256
+extern RECOMP_TLS uint32_t g_call_stack[RECOMP_STACK_SIZE];
+extern RECOMP_TLS uint32_t g_call_depth;
+/* Depth keeps counting past the array so pushes and pops stay balanced when a
+ * chain runs deeper than we record; only the first RECOMP_STACK_SIZE are kept. */
+#define RECOMP_FRAME_PUSH(caller) do { \
+    if (g_call_depth < RECOMP_STACK_SIZE) g_call_stack[g_call_depth] = (caller); \
+    g_call_depth++; \
+} while(0)
+#define RECOMP_FRAME_POP() do { if (g_call_depth) g_call_depth--; } while(0)
+/* A callee must leave esp at least where it found it: RECOMP_CALL pushes a dummy
+ * return address and the lifted `ret` pops it (`ret N` pops N more). Coming back
+ * BELOW the caller's esp means the callee leaked stack -- a lift that ran off the
+ * end of a function without a ret, or a ret whose immediate we got wrong. The
+ * caller does not notice; its locals are simply 4 bytes off from then on, and it
+ * surfaces much later as a struct pointer that reads one field too low. */
+void recomp_stack_leak(uint32_t caller, uint32_t callee, uint32_t esp0, uint32_t esp1);
+/* POD_DUMP_AFTER=<va>: snapshot the frame buffer the moment that function
+ * returns. There is no other way to see what one drawing pass produced before
+ * the next one runs over it. Zero when unset, so this is one compare per call. */
+extern uint32_t g_after_call_va;
+void recomp_after_call(void);
+#define RECOMP_STACK_CHECK(caller, callee, esp0) do { \
+    if (g_esp < (esp0)) recomp_stack_leak((caller), (callee), (esp0), g_esp); \
+    if ((callee) == g_after_call_va) recomp_after_call(); \
+} while(0)
+#else
+#define RECOMP_FRAME_PUSH(caller) ((void)0)
+#define RECOMP_FRAME_POP()        ((void)0)
+#define RECOMP_STACK_CHECK(caller, callee, esp0) ((void)0)
+#endif
+void recomp_dump_stack(const char* why);
+
 /* Direct call to a known recompiled function */
 #define RECOMP_CALL(func) do { \
+    uint32_t _caller = g_cur_func, _esp0 = g_esp; \
+    RECOMP_FRAME_PUSH(_caller); \
     PUSH32(esp, RECOMP_RETADDR); /* dummy return address */ \
     func(); \
+    /* g_cur_func is the callee's own VA here: its inner calls restored it. */ \
+    RECOMP_STACK_CHECK(_caller, g_cur_func, _esp0); \
+    RECOMP_FRAME_POP(); \
+    g_cur_func = _caller;  /* the callee's RECOMP_ENTER clobbered it */ \
 } while(0)
 
 /* Indirect call through dispatch */
@@ -307,10 +616,14 @@ recomp_func_t recomp_lookup_import(uint32_t va);    /* import bridges */
     if (!_fn) _fn = recomp_lookup(_va); \
     if (!_fn) _fn = recomp_lookup_import(_va); \
     if (_fn) { \
+        uint32_t _caller = g_cur_func; \
+        RECOMP_FRAME_PUSH(_caller); \
         PUSH32(esp, RECOMP_RETADDR); \
         _fn(); \
+        RECOMP_FRAME_POP(); \
+        g_cur_func = _caller; \
     } else { \
-        fprintf(stderr, "ICALL: unresolved VA 0x%08X\n", _va); \
+        fprintf(stderr, "ICALL: unresolved VA 0x%08X from 0x%08X\n", _va, g_cur_func); \
         /* Nothing was pushed and no callee ran -> leave esp untouched. A real */ \
         /* call+ret nets zero; the old `esp += 4` leaked 4 bytes each time. */ \
         eax = 0; \
@@ -327,7 +640,7 @@ recomp_func_t recomp_lookup_import(uint32_t va);    /* import bridges */
     if (!_fn) _fn = recomp_lookup(_va); \
     if (!_fn) _fn = recomp_lookup_import(_va); \
     if (_fn) { _fn(); } \
-    else { fprintf(stderr, "ITAIL: unresolved VA 0x%08X\n", _va); } \
+    else { fprintf(stderr, "ITAIL: unresolved VA 0x%08X from 0x%08X\n", _va, g_cur_func); } \
 } while(0)
 
 /* ============================================================
@@ -337,14 +650,17 @@ recomp_func_t recomp_lookup_import(uint32_t va);    /* import bridges */
  * or unexpected exit can dump the last N functions that ran -- a poor-man's
  * backtrace when no debugger is available. Zero cost unless RECOMP_TRACE is set.
  * ============================================================ */
+/* Always-on: a plain global store (no call), so unlike the ring tracer below it
+ * doesn't force register reloads -- it pins a crash to a function without
+ * perturbing codegen. */
 #ifdef RECOMP_TRACE
 #define RECOMP_ENTER_SIZE 1024
 extern uint32_t g_enter_trace[RECOMP_ENTER_SIZE];
 extern uint32_t g_enter_idx;
 void recomp_trace_enter(uint32_t va);
-#define RECOMP_ENTER(va) recomp_trace_enter(va)
+#define RECOMP_ENTER(va) do { g_cur_func = (va); recomp_trace_enter(va); } while (0)
 #else
-#define RECOMP_ENTER(va) ((void)0)
+#define RECOMP_ENTER(va) (g_cur_func = (va))
 #endif
 /* Always-callable trace dump (no-op unless RECOMP_TRACE). */
 void recomp_dump_trace(const char* why);
