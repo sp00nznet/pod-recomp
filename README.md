@@ -27,7 +27,7 @@ machine without an MMX Pentium and a 3dfx card under the desk.
 | **Phase 0** — disc extract + IDA-seeded discovery | ✅ Complete | 951 disc files; **3,411 functions** found |
 | **Phase 1** — x86 → C codegen | ✅ Complete | **3,405 functions, 0 lift errors**, 422K lines of C |
 | **Phase 2** — compile | ✅ Complete | static lib, **0 compile errors** |
-| **Phase 3** — runtime / boot | 🟢 **Menu on screen, race loading** | `pod_recomp.exe` draws POD's main menu ([docs/menu.png](docs/menu.png)), takes keyboard input, and on **ONE PLAYER** (or its own attract-mode timeout) loads the Downtown circuit for real — `DownTown.BL3`, the HUD skin, all seven cars' sound banks. Frontier: one face normal comes out with an x87 *integer-indefinite* component, which cascades into a zero camera basis and trips POD's own `("3D","NORM")` check. |
+| **Phase 3** — runtime / boot | 🏁 **It races** | Menu → Downtown → **a running race**: countdown, gears, **complete laps** (best 00'37"17 at 121 MPH), AI standings with real gaps ([docs/race.png](docs/race.png)). Frontier: the track doesn't draw — every primitive projects to the whole viewport, so the world is one flat colour. |
 | Phase 3+ — gameplay | ⏳ Pending | first frame (intro is `DrawDibDraw`/Indeo video — stubbed; or reach the DirectDraw menu); harden WINMM/joystick/video stubs; the world of Io |
 
 **It runs its game logic — multi-threaded.** The recompiled `PODMMX.EXE` runs its
@@ -56,7 +56,18 @@ indexing (`X86_REG_ST0`).
   frame. The lifter now sources those 27 immediates from memory.
 - **MMX**, on the MMX build, was entirely unimplemented in the lifter.
 
+**And it races.** One more lifter bug stood between the menu and the grid: x87's
+pop-arithmetic takes a destination register — `fOPp st(i), st(0)` computes into
+ST(i) and *then* pops — and the lifter ignored the index, writing into st(1) every
+time. For `faddp st(1)`, the common form, that is accidentally correct, which is why
+it survived. POD's hand-written fixed-point 3D helpers use the whole stack:
+`fmulp st(5)`, `fsubp st(3)`. Its cross product was computing on the wrong registers,
+overflowing an `fistp` into x87's *integer indefinite*, and that one poisoned value
+cascaded six layers into a zero camera basis and POD's own `("3D","NORM")` abort.
+
 See [docs/PHASE3.md](docs/PHASE3.md).
+
+![POD Gold racing, recompiled](docs/race.png)
 
 ![POD Gold's main menu, recompiled](docs/menu.png)
 

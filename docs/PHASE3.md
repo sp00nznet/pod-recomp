@@ -306,7 +306,75 @@ That is the circuit geometry, the HUD skin, and all seven cars' sound banks.
 > The `[io]` log was capped at 80 lines, which is why the whole race load looked
 > like it never happened. `POD_IO_LOG=0` prints every open.
 
-## Current frontier 🚧 — one overflowed `fistp` short of a race
+## It races 🏁
+
+![POD Gold racing, recompiled](race.png)
+
+Position 1/7 on lap 1 of 8 at Downtown, 111 MPH in sixth, lap time `00'11"32`, and
+the standings board keeping real gaps to Shane, Raze, Marco and Diamond. The
+countdown runs, the car accelerates through the gears, the AI races, the clock
+ticks. Everything but the world.
+
+**What was in the way: `fmulp st(5)` was being lifted as `fmulp st(1)`.**
+
+x87's pop-arithmetic takes a destination register — `fOPp st(i), st(0)` computes
+into ST(i) and *then* pops, so the result lands in st(i-1) once the stack shifts.
+The lifter ignored the index and wrote into st(1) every time, and had the
+subtract/divide direction reversed on top of that (`fsubp st(i)` is
+ST(i) − ST(0), not the other way round). For `faddp st(1)` — the overwhelmingly
+common form, and the only one XWA and Fury³ ever exercised — that happens to be
+right, which is why it survived this long.
+
+POD's fixed-point 3D helpers are hand-written x87 that uses the whole stack:
+`sub_004D4E5F`, the cross product, does `fsubp st(3)` and `fmulp st(5)`. With
+every one of those computing on st(1), the cross product came out with a z
+component too large for `fistp`, which stored x87's *integer indefinite*
+`0x80000000`. That poisoned the squared-length helper, which made
+`sub_00423BC0`'s normalise divide by `0x80000000` and turn a clean `(0, 0, 1.0)`
+into `(0, 0, 0)`, which reached the camera basis, which failed to normalise, which
+tripped POD's own `("3D","NORM")` check and called `exit(-1)`.
+
+One wrong register index, six layers down.
+
+It completes laps: **best lap 00'37"17**, 121 MPH in sixth, position and gaps to
+Marco, Raze, Diamond, Ken-ichi and Slate all updating. 27,481 flips in 40 seconds
+with no faults.
+
+## Build configurations
+
+`RECOMP_TRACE` — the function-entry ring, the shadow call stack and the stack-leak
+check — is a call plus several checks on **every** lifted function entry, and POD
+makes tens of millions of them per race. It is now Debug-only, along with `/Od`;
+Release gets `/O2` and none of the hooks. Bring a subsystem up in Debug, then run
+the game in Release:
+
+```
+cmake --build build --config Release
+build/Release/pod_recomp.exe analysis/PODMMX.EXE --run
+```
+
+## Current frontier 🚧 — the world does not draw
+
+The HUD, sprites and text render; the track does not. What is established:
+
+- The renderer runs. `sub_004D687C` (an MMX full-screen fill, 640x480 pitch 1280)
+  clears the frame, and `sub_004980E0` dispatches primitives to five span fillers
+  at `0x00481C28..0x00481F58`.
+- Primitives *are* dispatched and drawn — the type nibble at `[obj+0xA]>>16` comes
+  through as 0x14 and 0x64, both of which the dispatcher handles.
+- But the spans describe the whole viewport: `y 0..479, x ..639`. Every primitive
+  covers the screen, so the last one wins and the world is one flat colour.
+- The camera basis is healthy — three orthonormal unit vectors tracking the car.
+- The MMX helpers are not the problem: `runtime/recomp32/mmx_selftest.c` in
+  pcrecomp checks all of them against hand-worked values and passes.
+
+So the projection is producing degenerate screen coordinates for every polygon,
+and the next step is the transform that feeds `sub_004980E0` rather than the
+rasterizer below it. Worth remembering that the 19 MMX functions at
+`0x004C6F70..0x004C81E1` are the **sound** mixer, reached from `0x004B9xxx` — not
+the rasterizer, which is plain integer code.
+
+## Previously — one overflowed `fistp` short of a race
 
 POD does not even need the keypress: the menu has an attract-mode timeout and starts
 Downtown on its own after a few seconds. Either way it gets as far as scene setup and
@@ -333,10 +401,9 @@ The chain, traced end to end:
 The camera copy itself is *not* the bug: right after `sub_0041D0C0` runs, the three
 basis vectors are a clean identity matrix. The zero arrives later, from step 3.
 
-**Next step:** catch the `fistp` in step 1 — poll `sub_004247F8`'s inputs at the
-moment its output goes indefinite. Note our FPU model is a C `double`, where x87 is
-80-bit extended; a value that overflows one and not the other would look exactly
-like this, so the precision model is a suspect as well as the arithmetic.
+*(Resolved — it was the pop-arithmetic destination register, above. The `fistp`
+was overflowing because the cross product it fed had been computed on the wrong
+x87 registers.)*
 
 Also still open: a stray sprite in the top-left corner, the fifth menu button draws
 its plate but not its label, and the intro video is stubbed. POD's intro is an **IV41 (Indeo 4.1) AVI**

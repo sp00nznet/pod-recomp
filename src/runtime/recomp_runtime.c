@@ -224,6 +224,12 @@ void recomp_trace_enter(uint32_t va) {
     }
 }
 #endif
+#ifndef RECOMP_TRACE
+/* The ring dumps are called from the fault handler and the shims, which are
+ * always built; without the tracer there is nothing to print. */
+void recomp_dump_tls_ring(const char* why)  { (void)why; }
+void recomp_dump_all_rings(const char* why) { (void)why; }
+#endif
 void recomp_dump_trace(const char* why) {
 #ifdef RECOMP_TRACE
     fprintf(stderr, "\n=== function-entry trace (last 48 before: %s) ===\n", why);
@@ -1204,9 +1210,13 @@ static LONG WINAPI veh(EXCEPTION_POINTERS* ep) {
         if (hit >= g_watch_page && hit < g_watch_page + 0x1000) {
             DWORD old;
             VirtualProtect((void*)g_watch_page, 0x1000, PAGE_READWRITE, &old);
-            /* Outside the range of interest: let it through and re-arm. */
+            /* Outside the range of interest: unprotect so the faulting store can
+             * retire (leaving the page read-only would fault the same
+             * instruction forever), and re-arm a couple of entries later. */
             uint32_t guest = (uint32_t)(hit - (uintptr_t)g_arena);
             if (g_watch_hi && (guest < g_watch_lo || guest >= g_watch_hi)) {
+                DWORD old;
+                VirtualProtect((void*)g_watch_page, 0x1000, PAGE_READWRITE, &old);
                 g_watch_rearm = 2;
                 return EXCEPTION_CONTINUE_EXECUTION;
             }
@@ -1217,7 +1227,11 @@ static LONG WINAPI veh(EXCEPTION_POINTERS* ep) {
                 last = g_cur_func;
                 fprintf(stderr, "[watch] write +0x%03X from 0x%08X (caller 0x%08X)\n",
                         (unsigned)(hit - g_watch_page), g_cur_func,
+#ifdef RECOMP_TRACE
                         g_call_depth ? g_call_stack[g_call_depth - 1] : 0);
+#else
+                        0u);
+#endif
                 fflush(stderr);
                 g_watch_hits++;
             }
@@ -1355,7 +1369,9 @@ int main(int argc, char** argv) {
     host_keys_init();
     { const char* a = getenv("POD_DUMP_AFTER");
       if (a) g_after_call_va = (uint32_t)strtoul(a, NULL, 0);
+#ifdef RECOMP_TRACE
       { const char* pv = getenv("POD_POLL_VA"); if (pv) g_poll_va = (uint32_t)strtoul(pv, NULL, 0); }
+#endif
       { const char* wv = getenv("POD_WATCH_VA");
         if (wv) host_watch_va((uint32_t)strtoul(wv, NULL, 0),
                               getenv("POD_WATCH_LEN") ? (uint32_t)strtoul(getenv("POD_WATCH_LEN"), NULL, 0) : 12,

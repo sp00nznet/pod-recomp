@@ -34,12 +34,19 @@ add_executable(pod_recomp
 target_include_directories(pod_recomp PRIVATE src/recomp src/recomp/gen src/runtime)
 
 # Benign (0) dummy return address so a stray stack leak can't become a huge size
-# argument; RECOMP_TRACE gives a function-entry backtrace on crash during bring-up.
-target_compile_definitions(pod_recomp PRIVATE RECOMP_RETADDR=0u RECOMP_TRACE)
+# argument. RECOMP_TRACE gives the function-entry ring, the shadow call stack and
+# the stack-leak check -- indispensable while bringing a subsystem up, and far too
+# expensive to keep once it works: it is a call plus a handful of checks on EVERY
+# lifted function entry, and POD makes tens of millions of them per race. Debug
+# only, so a Release build runs the game at a sane speed.
+target_compile_definitions(pod_recomp PRIVATE
+    RECOMP_RETADDR=0u
+    $<$<CONFIG:Debug>:RECOMP_TRACE>)
 
 if(MSVC)
     # Generated code is intentionally not warning-clean; /bigobj for huge TUs.
-    target_compile_options(pod_recomp PRIVATE /w /bigobj /Od)
+    target_compile_options(pod_recomp PRIVATE /w /bigobj)
+    target_compile_options(pod_recomp PRIVATE $<IF:$<CONFIG:Debug>,/Od,/O2>)
     # The host process must leave the guest VA range [0x00400000 ..] free so the
     # loader can map it fixed (g_mem_base == 0): link at a high base, ASLR off.
     target_link_options(pod_recomp PRIVATE /BASE:0x70000000 /DYNAMICBASE:NO /FIXED)
