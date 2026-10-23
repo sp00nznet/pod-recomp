@@ -19,21 +19,3 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
-
----------------------------------------------------------------------------
-Scope
-
-The grant above covers this project's own work: the runtime, the import
-bridges, the DirectDraw and DirectInput shims, the threading and input layers,
-the lift drivers and the tooling and documentation. All of it was written for
-this project.
-
-It does not cover POD or POD Gold. The game's executable, data and assets
-belong to Ubi Soft Entertainment and are not distributed here. Neither is the
-lifted C: that is machine-translated from the original executable and carries
-whatever rights the executable does, which is why it is generated on your
-machine, from your copy, and never checked in.
-
-The screenshots in docs/ show this project's output running against a disc you
-must supply yourself. The artwork in them is the original game's, reproduced
-here only to record how far the recompilation gets, and no claim is made to it.

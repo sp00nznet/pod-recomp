@@ -1,11 +1,150 @@
-# Phase 3 — runtime bring-up
+# Bring-up log
+
+How POD Gold got from a lifted binary to a running game, and the traps on the
+way. Newest first. [architecture.md](architecture.md) has how the parts fit.
+
+## The relift (October 2026): the track draws
+
+The project moved onto the current pcrecomp pipeline: pcrecomp's disasm32
+instead of IDA, `tools/lift/generate.py` + `lift32` instead of a private lift
+loop, and `runtime/native32` (the guest's imports go to real Windows) instead
+of hand-written import bridges and synthesized COM objects. The first
+bring-up's frontier, *every polygon covers the whole screen*, did not survive
+it: the first frames off the new build had the 3D world in them. Below is what
+stood between the relift and that first frame, in the order it was hit.
+
+### The CPU detector quits on any CPU newer than 2004
+
+`sub_004A2DBC` maps CPUID to a renderer class: Intel family 5 or 6, or an AMD
+K5/K6 by exact model. Anything else leaves the class at 0xFF and WinMain
+returns at once, with no message. A Ryzen reports family 0xF (extended family
+25), so the **original exe** quits on this machine too. Two `PATCHES` in
+`run_lift.py` make CPUID answer as a Pentium MMX (GenuineIntel, family 5
+model 4) and the game's own code picks class 2. `--original` gets the same
+answer through a host hook on the function (`hook_cpu_detect`, host.c).
+
+The run looked like this, which is what to look for if it ever comes back:
+
+```
+[cd] W:\ is the game folder, as the POD Gold CD
+[exit] ExitProcess(0) after 0 frames
+```
+
+### Ubi.ini lives in the Windows folder
+
+The installer recorded the install in `C:\Windows\UbiSoft\Ubi.ini`; without it
+the game exits quietly after reading `[POD2_0] Configuration`. The host answers
+`GetWindowsDirectoryA` with the game folder, so `game\UbiSoft\Ubi.ini`
+(Setup.cmd writes it) is read and the real Windows folder is never touched.
+
+### IDirectDraw2
+
+POD's first call on its DirectDraw object is `QueryInterface(IDirectDraw2)`.
+The host's DirectDraw (from Streets of SimCity, a DirectX 3 game) only had the
+v1 interface: `POD Fatal error: QueryInterface failed`. v2 is v1 with a
+five-argument `SetDisplayMode` and `GetAvailableVidMem`; ddraw.c serves both
+from one object.
+
+### The main loop sleeps until something wakes it
+
+WinMain waits in `MsgWaitForMultipleObjects(INFINITE)` and runs a frame only
+when a message or an event arrives. Fullscreen in 1997 that traffic never
+stopped; a cloaked headless window gets none. The host posts a 60 Hz
+`WM_TIMER` (`heartbeat`, host.c), as the first runtime did with `SetTimer`.
+
+### The original machine code was running, silently (pcrecomp#128)
+
+The run sat in the message loop with three DirectDraw inits, the third one
+windowed, and no frame. A function-entry trace (`--firsthit`) showed only the
+main thread ever running lifted code, though the game had started its intro
+thread. Two toolkit bugs let Windows run POD's original code instead of the
+lift whenever it called into the guest (a thread start, the window procedure):
+
+- Watcom leaves `VirtualSize` 0 on every section, so native32 sized the code
+  section as empty and never made it non-executable.
+- POD itself calls `VirtualProtect(code, PAGE_EXECUTE_READWRITE)` at start, for
+  its self-modifying blitter, which undid it anyway.
+
+The tell was in `--callbacks`: lines like `[callback] sub_060B00D0 (...)` are
+calls into the **shim page**, which only original code makes (it calls through
+its IAT; lifted code calls the shims directly). Both are fixed in native32 by
+pcrecomp#128. Until that is merged, build against its branch
+(`fix/native32-watcom-sections`).
+
+### A switch table decoded as code hid the window procedure
+
+With the lift really running, Windows' first call into the window procedure
+faulted:
+
+```
+[callback] Windows called guest 0x004A0DC8, which is not lifted
+```
+
+Watcom puts a switch's jump table in the code segment, right before the
+function. disasm32's data scan decoded the table at `0x004A0DA4` as a
+function, and its made-up body ran over `0x004A0DC8`, the window procedure.
+WinMain passes that address to `RegisterClassA` as an immediate, so
+`tools/catalog.py` seeds every code address the program uses as a `push`/`mov`
+immediate (six of them, five of which IDA also lists) and runs disasm32 again.
+
+### The CD: a drive letter, a label, and no audio tracks
+
+POD walks the drive letters for a CD-ROM labelled `POD`, `POD_POD_POD` or
+`POD2_0`, and asks for the disc otherwise. The host maps the game folder to a
+free letter (`DefineDosDevice`, no admin) and answers `GetDriveTypeA` and
+`GetVolumeInformationA` for it.
+
+The music is Red Book audio (the CUE: track 1 data, track 2 audio), played
+through MCI's `cdaudio`. A folder has no audio tracks, so the real open fails
+with MCI error 0x10A and POD opens an error dialog (`USERMSG_INITERROR`,
+code 0x21), which headless waits forever. The host answers `cdaudio` itself,
+silently, with the disc's track layout.
+
+### The blitter writes before the surface
+
+`sub_0049C81C` expands an 8-bit picture into the 16-bit back buffer and stores
+its first pixel 2 bytes *before* the locked surface. On a 1997 card that is
+somebody else's video memory; on a DIB section it is an unmapped page:
+
+```
+=== fault 0xC0000005 at 0x610ABD12 ===
+  write of 0x0DC6FFFE
+  in lifted sub_0049C81C
+```
+
+Every surface now has a page of slack on each side (ddraw.c `surf_new`).
+
+### The keyboard is event-driven
+
+POD creates an event called `DInputKeyboard`, hands it to DirectInput's
+`SetEventNotification`, and reads the keyboard only when it is signalled. A
+cloaked window never receives a real key, so the event never fired and
+scripted keys did nothing. dinput.c keeps the event and the host signals it
+when a `--key` goes down or up; the key itself reaches `GetDeviceState` by its
+DIK scan code.
+
+### Where that leaves it
+
+Headless, no input: the intro stills, the main menu at about 10 s, the
+attract-mode race (Downtown, all seven cars, the full 3D world and the HUD)
+from about 20 s, and back to the menu at about 50 s. Around 27,000 frames in
+60 seconds with no fault. `tools/conformance.py` scores exactly that: 10/10.
+
+## The first bring-up (August 2026, a retired runtime)
+
+> Everything below describes the first runtime: an IDA catalog, a forked
+> `recomp_types.h`, synthesized COM objects and hand-written import bridges.
+> It was replaced by the relift above and none of its files exist any more.
+> It is kept because the findings about the game itself still hold: the
+> self-modified immediates, the x87 pop-arithmetic bug (fixed in pcrecomp), the
+> private window messages, the attract-mode timeout.
 
 Phase 3 turns the compiled translation units into a **host executable that maps
 `PODMMX.EXE` into a simulated address space and actually executes its code**,
 starting from the Watcom CRT entry point. Architecture follows the sister project
 `fury3` (the first in the family to boot into its main loop).
 
-## What was built
+### What was built
 
 | Piece | File | Role |
 |-------|------|------|
@@ -28,7 +167,7 @@ cmake -B build -A Win32 && cmake --build build --config Debug
 build/Debug/pod_recomp.exe analysis/PODMMX.EXE --run
 ```
 
-## Memory model
+### Memory model
 
 The host EXE is linked at a high base (`/BASE:0x70000000 /DYNAMICBASE:NO`). At
 startup the runtime reserves **one arena** wherever Windows has room and points
@@ -45,7 +184,7 @@ whole guest space is addressed transparently through the `MEM`/`ADDR` macros:
 (An earlier fixed-map-at-`0x400000` attempt failed: with the host linked high, the
 CRT's own heap lands in low memory before our code runs — hence the arena.)
 
-## How far it boots ✅
+### How far it boots ✅
 
 From the Watcom CRT entry (`sub_004C9FD8`), the recompiled code runs **~200
 function entries (57 distinct functions) of real CRT initialization** before
@@ -61,7 +200,7 @@ sections, and the start of the CRT's **init/fini function-pointer table walk**
 (`sub_004CA4EA`/`sub_004CA536`, records `{type, priority, func}` sorted by
 priority) — i.e. the C runtime is genuinely coming up.
 
-## Jump-table / cross-function control flow ✅ resolved
+### Jump-table / cross-function control flow ✅ resolved
 
 The earlier derail around `0x004CB3xx` (registers holding code addresses; an
 indirect call reading code bytes as a pointer, `ITAIL: unresolved 0x004CB4DC` …)
@@ -95,7 +234,7 @@ table-content analysis rather than the literal-scan closure.)
 - Segment registers `fs`/`gs` map via capstone's symbolic IDs (stale numeric IDs
   broke `pop fs`/`pop gs`).
 
-## CRT-heap `memset` overrun ✅ resolved (a shift-flags lifter bug)
+### CRT-heap `memset` overrun ✅ resolved (a shift-flags lifter bug)
 
 The access violation deeper in init was Watcom's `memset` fill loop
 (`sub_004CA197`) running with `ECX = 0xFF800026` (~4 GB) off the end of the arena.
@@ -109,7 +248,7 @@ is everywhere.) Also fixed: real **TLS** (`TlsAlloc/Free/Get/SetValue` back a sl
 table — the stubs made every guest thread-data lookup fail in a tight loop,
 "Thread has no thread-specific data").
 
-## How far it boots now ✅ — full startup, graceful exit
+### How far it boots now ✅ — full startup, graceful exit
 
 The recompiled `PODMMX.EXE` runs its **entire boot sequence** — **378 function
 entries** — with no crash:
@@ -127,7 +266,7 @@ no DirectDraw: pops its **own** `MessageBox` — *"POD Fatal error: DirectDrawCr
 failed"* — and calls `ExitProcess(-1)`. The recompiled game is executing its real
 logic end-to-end through the HAL boundary.
 
-## DirectDraw COM shim ✅ — graphics init runs, window opens
+### DirectDraw COM shim ✅ — graphics init runs, window opens
 
 `DirectDrawCreate` now returns a real **fake COM object** (`src/runtime/ddraw_shim.c`).
 COM objects are synthesised in *guest* memory as `{ vtbl_va, fields… }`; each vtable
@@ -149,7 +288,7 @@ shim — `DirectDrawCreate → SetCooperativeLevel(FULLSCREEN) → EnumDisplayMo
 CreateSurface(primary, 640×480) → CreateSurface(offscreen system-mem render target)`
 — and a 640×480 window opens. The game is past the HAL boundary and into its loop.
 
-## Full startup → game loop ✅ — reaches WinMain's message loop
+### Full startup → game loop ✅ — reaches WinMain's message loop
 
 A run of fixes took POD all the way through its real startup to the game loop:
 
@@ -184,7 +323,7 @@ config → CPU detect → **DirectDraw** init (`SetDisplayMode 640×480×16`,
 `CreateSurface` primary+backbuffer flip chain, 640×480 window) → **DirectInput**
 (create device) → into **WinMain's `MsgWaitForMultipleObjects` game loop**.
 
-## Threading ✅ — the game runs its real multi-threaded logic
+### Threading ✅ — the game runs its real multi-threaded logic
 
 POD is **multi-threaded**, so the runtime now runs each guest thread on a real host
 thread (`src/runtime/thread_shim.c`):
@@ -207,7 +346,7 @@ function calls**, loaded its menu/track/car data (`circuits.bin`, `voitures.bin`
 `DIC_MNU/GAM/ERR.BMD`), and performed a **second DirectDraw init** (entering the
 game proper) — all without crashing.
 
-## Current frontier 🚧 — first rendered frame
+### Then: no rendered frame yet
 
 The recompiled POD runs its **full engine** and **no longer crashes**: it completes
 both DirectDraw inits, loads the menu/track/car data and every circuit sound bank
@@ -230,9 +369,9 @@ chain pops the caller's. **565 functions** were falling off their end this way.
 Nothing here was the "encrypted data-cache writer" being hard; it was one truncated
 function 224K calls earlier.
 
-## The menu is on screen 🎉
+### The menu is on screen 🎉
 
-![POD Gold's main menu, recompiled](menu.png)
+(The screenshot from this stage was retired with the runtime.)
 
 640x480x16, locked, drawn and flipped by the recompiled MMX rasterizer, presented
 with `StretchDIBits`. Dump one yourself with
@@ -249,7 +388,7 @@ host proc instead of the game's. The runtime now captures `lpfnWndProc` from
 and `DispatchMessageA` calls POD's WndProc (`0x004A0DC8`) through the dispatch
 table. `SendMessageA`, `PostMessageA` and `DefWindowProcA` are real too.
 
-## The frame is clean — self-modifying code, and MMX
+### The frame is clean — self-modifying code, and MMX
 
 The first menu frame was 10.6% salt-and-pepper speckle and the run died after ~60
 flips. Both had one cause.
@@ -283,7 +422,7 @@ have a per-thread 64-bit register file in the runtime and a lifter that emits it
 This did not change the menu (a 2D palettized path) but the software rasterizer is
 made of it.
 
-## The menu responds, and a race loads
+### The menu responds, and a race loads
 
 Keyboard input is wired: real host keys whenever our window is in the foreground,
 plus `POD_KEYS="6000:RETURN,11000:DOWN"` — a millisecond timeline, so a headless run
@@ -306,9 +445,9 @@ That is the circuit geometry, the HUD skin, and all seven cars' sound banks.
 > The `[io]` log was capped at 80 lines, which is why the whole race load looked
 > like it never happened. `POD_IO_LOG=0` prints every open.
 
-## It races 🏁
+### It races 🏁
 
-![POD Gold racing, recompiled](race.png)
+(The screenshot from this stage was retired with the runtime.)
 
 Position 1/7 on lap 1 of 8 at Downtown, 111 MPH in sixth, lap time `00'11"32`, and
 the standings board keeping real gaps to Shane, Raze, Marco and Diamond. The
@@ -340,7 +479,7 @@ It completes laps: **best lap 00'37"17**, 121 MPH in sixth, position and gaps to
 Marco, Raze, Diamond, Ken-ichi and Slate all updating. 27,481 flips in 40 seconds
 with no faults.
 
-## Build configurations
+### Build configurations
 
 `RECOMP_TRACE` — the function-entry ring, the shadow call stack and the stack-leak
 check — is a call plus several checks on **every** lifted function entry, and POD
@@ -353,7 +492,7 @@ cmake --build build --config Release
 build/Release/pod_recomp.exe analysis/PODMMX.EXE --run
 ```
 
-## Current frontier 🚧 — the world does not draw
+### Then: the world did not draw (fixed by the relift)
 
 The HUD, sprites and text render; the track does not. What is established:
 
@@ -374,7 +513,7 @@ rasterizer below it. Worth remembering that the 19 MMX functions at
 `0x004C6F70..0x004C81E1` are the **sound** mixer, reached from `0x004B9xxx` — not
 the rasterizer, which is plain integer code.
 
-## Previously — one overflowed `fistp` short of a race
+### Previously — one overflowed `fistp` short of a race
 
 POD does not even need the keypress: the menu has an attract-mode timeout and starts
 Downtown on its own after a few seconds. Either way it gets as far as scene setup and
@@ -422,7 +561,7 @@ diagnostics.
 
 **Minor:** `ICALL: unresolved 0x004D23A3` (init-table funcptr; indirect target).
 
-## Bring-up instrumentation
+### Bring-up instrumentation
 
 - `-DRECOMP_TRACE` (on in the Debug build) records every function entry in a ring
   buffer; `recomp_dump_trace()` prints the last 256 on a fault or watchdog trip.

@@ -40,9 +40,9 @@ All the `POD*`/`W*POD*` game executables share a fingerprint:
 | Entry point | `0x004C9FD8` |
 | Code segment | `AUTO` — `0x00401000`–`0x004DEA00` (~890 KB) |
 | Imports | **231** functions from **9** DLLs |
-| Functions (IDA) | **3,411** |
+| Functions | **3,725** starts in the disasm32 catalog (`tools/catalog.py`); **9,257** dispatchable entries once Watcom's shared tails and switch arms are counted |
 
-**Import surface (the HAL we'll need in Phase 3):**
+**Import surface:**
 
 | DLL | Role |
 |-----|------|
@@ -61,5 +61,5 @@ IDA's FLIRT pass named ~524 functions, and the names are revealing — e.g.
 `W?OnQuery3dControls$:CWnd$n(uil)l`. That `W?…$:…$n(…)` shape is **Watcom name
 mangling**, and `CWnd` / `CSyncObject` are **MFC** classes. So POD's UI/launcher layer
 is **MFC compiled with the Watcom toolchain** — an unusual combination, and the reason
-the project's MSVC-oriented FLIRT signatures only partially match. See
-[PIPELINE.md](PIPELINE.md) for how this affects (and doesn't affect) the recomp.
+the project's MSVC-oriented FLIRT signatures only partially match. None of it matters to the
+lift, which needs no names: see [architecture.md](architecture.md).

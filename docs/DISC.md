@@ -5,7 +5,7 @@
 - **Volume label:** `POD2_0`. The PVD system-identifier field reads
   `APPLE COMPUTER, INC., TYPE: 0002` — this is a **hybrid Mac/PC pressing** (POD shipped
   on Mac too), premastered with Apple tooling.
-- **Contents:** 951 files, ~450 MB, extracted to `game_files/` by `tools/extract_disc.py`.
+- **Contents:** 951 files, ~450 MB, extracted to `game/` by `tools/extract_disc.py` (Setup.cmd runs it).
 - **Multi-language:** a European pressing — readmes and string tables in English, French,
   German, Italian, and Spanish.
 
@@ -36,5 +36,5 @@ POD was made in France by Ubi Soft.
 ## Re-extracting
 
 ```
-py -3.11 tools/extract_disc.py POD2_0.BIN game_files
+py -3 tools/extract_disc.py POD2_0.BIN game
 ```

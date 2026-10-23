@@ -1,10 +1,17 @@
 #!/usr/bin/env python3
-"""Recursively extract the ISO9660 tree from a Mode1/2352 BIN into game_files/."""
+"""Extract the ISO9660 tree of a POD disc image into game/.
+
+    py -3 tools/extract_disc.py POD2_0.BIN game     # the raw Mode1/2352 image (BIN/CUE)
+    py -3 tools/extract_disc.py POD.iso game        # or a plain 2048-byte ISO
+
+Only the data track is read; the CD audio track (the music) is not.
+"""
 import struct, os, sys
 
 BIN = sys.argv[1] if len(sys.argv) > 1 else "POD2_0.BIN"
-OUT = sys.argv[2] if len(sys.argv) > 2 else "game_files"
-SEC, OFF = 2352, 16  # Mode1/2352: 16-byte sync header, then 2048 data
+OUT = sys.argv[2] if len(sys.argv) > 2 else "game"
+# Mode1/2352: a 16-byte sync header, then 2048 bytes of data. An ISO is the data alone.
+SEC, OFF = (2048, 0) if BIN.lower().endswith(".iso") else (2352, 16)
 
 fh = open(BIN, "rb")
 
@@ -47,6 +54,8 @@ def walk(lba, length, path):
         if name in ("\x00", "\x01"):  # . and ..
             continue
         cn = clean(name)
+        if not cn or cn in (".", "..") or "/" in cn or "\\" in cn:
+            continue  # the image is untrusted: nothing may land outside OUT
         dst = os.path.join(path, cn)
         if flags & 2:
             os.makedirs(dst, exist_ok=True)

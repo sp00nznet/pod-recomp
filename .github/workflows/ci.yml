@@ -1,0 +1,25 @@
+# What can be checked without the game: the scripts compile, and nothing from
+# the disc or the lift is tracked (REPO_RULES section 3). The build itself needs
+# the user's PODMMX.EXE, so it runs on netlab and on users' machines, not here.
+name: ci
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Python compiles
+        run: python -m py_compile run_lift.py tools/*.py
+      - name: No game files or lifted C tracked
+        run: |
+          bad=$(git ls-files | grep -iE '\.(exe|dll|bin|cue|iso|mdf)$|^game/|^work/|^src/recomp/gen/|^analysis/|^config/' || true)
+          if [ -n "$bad" ]; then echo "tracked but must not be:"; echo "$bad"; exit 1; fi
