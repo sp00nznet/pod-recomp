@@ -31,12 +31,13 @@ its `lift32` writes the C, and its `native32` runtime hosts it.
 |---|---|
 | Boot, CD check, config, intro | ✅ (the intro stills draw to the window, not yet to `--record`) |
 | Main menu | ✅ drawn, takes keys (`--key`) |
-| Attract-mode race | ✅ Downtown, seven cars, **the 3D world drawn**, HUD, laps and standings |
+| Attract-mode races | ✅ Downtown, seven cars, **the 3D world drawn**, HUD, laps and standings; then a four-way split-screen race |
 | Your own race (One Player) | ⏳ not yet driven through by a script |
 | CD music | 🔇 the CD audio device answers but plays nothing |
+| Videos (intro, credits) | 🚫 Indeo 4.1, which Windows no longer decodes: skipped, as if missing |
 | Sound effects | ✅ through Windows' `waveOut` |
 | Windowed play on a screen | ⚠️ the window and presenter are in, but only headless runs have been checked |
-| Conformance | **10/10** milestones, 0 lift errors ([below](#conformance)) |
+| Conformance | **11/11** milestones, 0 lift errors ([below](#conformance)) |
 
 The track did not draw at all before October 2026; relifting on the current pcrecomp
 fixed it. How, and every other wall on the way, is in [docs/bringup.md](docs/bringup.md).
@@ -50,6 +51,8 @@ From a headless run (`--record`): the main menu, and POD's attract-mode race.
 ![POD Gold racing on Downtown, recompiled](docs/screenshots/race.png)
 
 ![Lap one, sixth gear](docs/screenshots/race2.png)
+
+![The second attract race: four-way split screen](docs/screenshots/splitscreen.png)
 
 ## Getting Started
 
@@ -179,17 +182,18 @@ build\pod.exe --run --headless --key ENTER@12000 --key DOWN@14000+300
 | `--native-trace`, `--callbacks`, `--ddraw-trace` | Every call to Windows; every call from Windows into the game; every DirectDraw call |
 
 With no input, POD's menu starts a race by itself after a few seconds (attract mode),
-so `--headless --record` alone shows the menu, a race and the return to the menu.
+so `--headless --record` alone shows the menu, a race, the menu again, then a
+four-way split-screen race.
 
 ## Conformance
 
-`py -3 tools\conformance.py` runs the host headless for 60 seconds and scores ten
+`py -3 tools\conformance.py` runs the host headless for 120 seconds and scores eleven
 milestones (image bound, the CD found, DirectDraw, past the CD and sound checks, the
 menu, the attract race starting, the 3D world drawn, the race moving, back to the menu,
-no fault) from its output and its recording, plus lift health from the generated tree.
+a second attract race after the video, no fault) from its output and its recording, plus lift health from the generated tree.
 It compares against [`conformance.json`](conformance.json) and fails on any drop.
 
-**Current: 10/10 milestones; 9,257 functions lifted, 0 errors, 3 unresolvable tail labels.**
+**Current: 11/11 milestones; 9,257 functions lifted, 0 errors, 3 unresolvable tail labels.**
 
 The corpus is your disc, which cannot be redistributed: without `game\`, a lift and a
 build, the harness prints `SKIP` and exits 0.

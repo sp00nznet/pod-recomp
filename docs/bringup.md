@@ -123,12 +123,30 @@ scripted keys did nothing. dinput.c keeps the event and the host signals it
 when a `--key` goes down or up; the key itself reaches `GetDeviceState` by its
 DIK scan code.
 
+### Videos Windows cannot decode
+
+After the first attract race POD plays a video (`intropod.avi`, or `credits.avi`). They
+are Indeo 4.1 and Windows has had no Indeo decoder for years: `AVIFileOpenA` works,
+`AVIStreamGetFrameOpen` returns NULL, and POD reads the frame through it.
+
+```
+=== fault 0xC0000005 at 0x609D8AA0 ===
+  read of 0x00000008 (null/low)
+  in lifted sub_0045FF20
+```
+
+The original does the same on a current PC. The first conformance runs stopped at 60
+seconds, just before it. The host now refuses a video whose stream has no decoder at
+`AVIFileOpenA`, as if the file were missing, and POD goes on to its next race.
+
 ### Where that leaves it
 
 Headless, no input: the intro stills, the main menu at about 10 s, the
 attract-mode race (Downtown, all seven cars, the full 3D world and the HUD)
-from about 20 s, and back to the menu at about 50 s. Around 27,000 frames in
-60 seconds with no fault. `tools/conformance.py` scores exactly that: 10/10.
+from about 20 s, back to the menu at about 50 s, a refused video, and a
+second race, four-way split screen on an outdoor track, from about 90 s. Over
+65,000 frames in two minutes with no fault. `tools/conformance.py` scores
+exactly that: 11/11.
 
 ## The first bring-up (August 2026, a retired runtime)
 

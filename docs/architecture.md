@@ -75,7 +75,7 @@ What the host adds, in `src/runtime/`:
 
 | File | Owns |
 |---|---|
-| `host.c` | The command line, the guest's module and command line, the CD (a drive letter, the `POD2_0` label, a silent `cdaudio`), `Ubi.ini` via `GetWindowsDirectoryA`, the 60 Hz message heartbeat, scripted keys, the watchdog and fault report |
+| `host.c` | The command line, the guest's module and command line, the CD (a drive letter, the `POD2_0` label, a silent `cdaudio`), refusing videos with no decoder, `Ubi.ini` via `GetWindowsDirectoryA`, the 60 Hz message heartbeat, scripted keys, the watchdog and fault report |
 | `ddraw.c` | DirectDraw (v1 and v2) over memory surfaces: no mode change, no exclusive screen. A Flip is a present: to the window, to ffmpeg (`--record`), or nowhere (`--headless`) |
 | `present.c` | The window's picture when there is a screen: scaling, aspect, a Direct3D 11 presenter |
 | `dinput.c` | Windows' DirectInput with three slots replaced: Acquire, GetDeviceState (scripted keys) and SetEventNotification (to wake the game when one changes) |
@@ -104,8 +104,8 @@ and not the lift's: both stalled the same way.
 
 ## Testing
 
-`tools/conformance.py` (REPO_RULES section 9) runs the host headless for 60
-seconds with no input and scores ten milestones from its output and its
+`tools/conformance.py` (REPO_RULES section 9) runs the host headless for 120
+seconds with no input and scores eleven milestones from its output and its
 recording, plus lift health from the generated tree; `conformance.json` is the
 baseline, and a drop in either fails. netlab's recipe runs it as QA; a test
 VM without `game\` reports SKIP.

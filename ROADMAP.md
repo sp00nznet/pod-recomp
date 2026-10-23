@@ -7,6 +7,9 @@
 - **CD music.** The host's `cdaudio` is silent. The music is track 2 of the user's
   `POD2_0.BIN` (raw 2352-byte audio sectors after the data track): play it through
   `waveOut` when the game asks MCI to play, and loop it as the CD did.
+- **The videos.** `intropod.avi`, `credits.avi` and the rest are Indeo 4.1; the host
+  refuses them because Windows has no decoder. twistedmetal-recomp lifted Intel's Indeo 4.1
+  codec from its disc; registered with VfW in this host, POD's own player would play them.
 - **The intro stills in the recording.** POD draws them with DrawDib on the window's DC,
   which `--record` (DirectDraw presents only) does not see.
 - **Windowed play checked on a real screen**, through offstage: focus, the real keyboard,

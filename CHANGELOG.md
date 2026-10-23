@@ -12,8 +12,8 @@ versions follow [SemVer](https://semver.org/). No version has been tagged yet.
   shortcut, from the CD, `POD2_0.BIN` or an ISO.
 - A headless mode that never touches a screen: `--headless`, `--record out.mp4`,
   `--frames`, `--shot`, and scripted keys with `--key NAME@MS[+HOLD]`.
-- `tools/conformance.py` and `conformance.json`: ten milestones from a 60-second
-  headless run plus lift health, failing on any drop. 10/10.
+- `tools/conformance.py` and `conformance.json`: eleven milestones from a 120-second
+  headless run plus lift health, failing on any drop. 11/11.
 - `--original`: the shipping machine code under the same host, for comparison.
 - `tools/catalog.py`: the function catalog from pcrecomp's disasm32, seeded with the code
   addresses the program uses as immediates.
@@ -36,6 +36,8 @@ versions follow [SemVer](https://semver.org/). No version has been tagged yet.
 - Its intro thread and window procedure ran the original machine code instead of the
   lift (pcrecomp#128).
 - A CD audio device that cannot open no longer stops the game at an error dialog.
+- A video Windows cannot decode (Indeo 4.1: the intro and credits) no longer crashes the
+  attract loop; it is refused at `AVIFileOpenA` and skipped.
 
 ### Removed
 - The IDA path: `tools/ida_*.py`, the `seed_*` closure scripts, and the committed IDA

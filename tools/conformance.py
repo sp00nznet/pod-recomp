@@ -4,10 +4,11 @@
 Two fixed corpora, one pass/fail count each, compared against the committed
 baseline in conformance.json; a regression fails the run:
 
-* **Milestones**: one headless run of the host with no input, 60 seconds.
+* **Milestones**: one headless run of the host with no input, 120 seconds.
   POD's menu starts a race on its own after a few seconds (attract mode), so
   the run covers the menu, the race and the return to the menu without a
-  script. Scored by the lines the host prints and by the recording.
+  script; after the race it tries a video (Indeo, which the host refuses: no
+  decoder) and starts another, four-way split-screen race. Scored by the lines the host prints and by the recording.
 * **Lift health**: from the generated tree. Lift errors, bodies with no
   terminator, and RECOMP_ITAIL labels that cannot resolve at run time (their
   target is not in the dispatch table).
@@ -32,7 +33,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 GEN = os.path.join(ROOT, 'src', 'recomp', 'gen')
 BASELINE = os.path.join(ROOT, 'conformance.json')
 VIDEO = os.path.join(ROOT, 'work', 'conformance.mp4')
-SECONDS = 60
+SECONDS = 120
 
 
 def host():
@@ -76,7 +77,8 @@ def world(t):
 
 
 # (name, test). Times are seconds into the run: the menu is up by 10, the
-# attract race runs from about 20 to 48, the menu is back by 50.
+# attract race runs from about 20 to 48, the menu is back by 50, a video is
+# refused around 60 and the second, split-screen race runs from about 90.
 MILESTONES = [
     ('image mapped and imports bound', lambda out: re.search(r'mapped PODMMX\.EXE', out)),
     ('the game folder is the CD', lambda out: re.search(r'\[cd\] \w:\\ is the game folder', out)),
@@ -87,6 +89,7 @@ MILESTONES = [
     ('the 3D world is drawn', lambda out: world(30) and world(40)),
     ('the race moves', lambda out: differ(30, 40)),
     ('back to the main menu', lambda out: same(14, 56)),
+    ('a second attract race after the video', lambda out: world(100) and differ(56, 100)),
     ('no fault', lambda out: '=== fault' not in out),
 ]
 

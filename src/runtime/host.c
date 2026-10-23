@@ -256,6 +256,50 @@ static void shim_mciSendCommandA(void) {
     RET(0, 4);
 }
 
+/* The videos (intropod.avi, which attract mode plays after its race) are
+ * Indeo 4.1, and Windows has had no Indeo decoder for years: the file opens,
+ * AVIStreamGetFrameOpen returns NULL, and POD reads the frame through that
+ * NULL and faults. The original exe does the same on a current PC. A video
+ * with no decoder is refused at AVIFileOpenA, the error POD expects for a
+ * missing file, and it goes on without it.
+ * ponytail: no video; the Indeo 4.1 codec lifted in twistedmetal-recomp is
+ * the upgrade (ROADMAP.md). */
+typedef HRESULT (WINAPI *avi_open_t)(void**, const char*, UINT, void*);
+typedef HRESULT (WINAPI *avi_stream_t)(void*, void**, DWORD, LONG);
+typedef void* (WINAPI *avi_getframe_open_t)(void*, void*);
+typedef LONG (WINAPI *avi_release_t)(void*);
+#define AVI_STREAMTYPE_VIDEO mmioFOURCC('v', 'i', 'd', 's')
+
+static void shim_AVIFileOpenA(void) {
+    static avi_open_t open; static avi_stream_t get_stream; static avi_getframe_open_t gf_open;
+    static avi_release_t gf_close, stream_release, file_release;
+    if (!open) {
+        HMODULE m = LoadLibraryA("avifil32.dll");
+        open = (avi_open_t)GetProcAddress(m, "AVIFileOpenA");
+        get_stream = (avi_stream_t)GetProcAddress(m, "AVIFileGetStream");
+        gf_open = (avi_getframe_open_t)GetProcAddress(m, "AVIStreamGetFrameOpen");
+        gf_close = (avi_release_t)GetProcAddress(m, "AVIStreamGetFrameClose");
+        stream_release = (avi_release_t)GetProcAddress(m, "AVIStreamRelease");
+        file_release = (avi_release_t)GetProcAddress(m, "AVIFileRelease");
+    }
+    void** out = (void**)(uintptr_t)ARG(0);
+    const char* name = (const char*)(uintptr_t)ARG(1);
+    HRESULT r = open(out, name, ARG(2), (void*)(uintptr_t)ARG(3));
+    void* vs = NULL;
+    if (SUCCEEDED(r) && SUCCEEDED(get_stream(*out, &vs, AVI_STREAMTYPE_VIDEO, 0))) {
+        void* gf = gf_open(vs, NULL);
+        if (gf) gf_close(gf);
+        stream_release(vs);
+        if (!gf) {
+            fprintf(stderr, "[avi] %s: no decoder for its video (Indeo), not played\n", name);
+            file_release(*out);
+            *out = NULL;
+            r = 0x80044067;                           /* AVIERR_FILEOPEN */
+        }
+    }
+    RET((uint32_t)r, 4);
+}
+
 /* POD's installer records the install in <Windows>\UbiSoft\Ubi.ini
  * ([POD2_0] Directory, Language, Configuration), and the game quits quietly
  * without it. The game folder stands in for the Windows folder, so
@@ -289,6 +333,7 @@ static native32_shim_t g_shims[] = {
     { "GetVolumeInformationA", shim_GetVolumeInformationA },
     { "GetWindowsDirectoryA", shim_GetWindowsDirectoryA },
     { "mciSendCommandA", shim_mciSendCommandA },
+    { "AVIFileOpenA", shim_AVIFileOpenA },
     DDH_SHIMS,
     DIH_SHIMS,
     { "MessageBoxA", shim_MessageBoxA },          /* headless only: the last entry */
