@@ -14,6 +14,8 @@ A static recompilation of **POD Gold** (Ubi Soft, 1997): the MMX software-render
 program that runs on a current PC, with no MMX Pentium, no 3D card and no disc in the
 drive. You supply the disc; nothing of the game is in this repository.
 
+![POD Gold's attract mode, recompiled: Downtown, then a four-way split-screen race](docs/screenshots/hero.gif)
+
 > **POD was a gem.** A futuristic combat racer with a nasty premise: the colony planet
 > **Io** is dying of a fungus dug out of its own crust, there is **one ship left**, and the
 > survivors race for the only seat off-world. It was also one of the first games to ship
