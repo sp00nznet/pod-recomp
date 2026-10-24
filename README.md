@@ -146,7 +146,7 @@ Ninja; Git. [ffmpeg](https://ffmpeg.org/) on `PATH` for `--record` and the confo
    [*]   2608 lifted, 0 outside branch targets added, 0 errors
    ============================================================
      lifted 11865   errors 0   no terminator 1066
-     4,304,639 lines of C in 60 files (60 changed), 89.8s
+     4,305,107 lines of C in 112 files (112 changed), 102.6s
    ============================================================
    ```
 

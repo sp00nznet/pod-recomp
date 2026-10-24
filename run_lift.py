@@ -120,15 +120,24 @@ def exe_stamp(path):
     return int.from_bytes(head[nt + 8:nt + 12], 'little')
 
 
+# Lines of C per file at most. The codec's hand-written assembly has dozens of
+# entries inside one routine, each lifted to its end: 7,000-line functions,
+# sixty to a file, 460,000 lines. MSVC's optimizer took over half an hour on
+# one such file while the other cores sat idle; capped, the work spreads.
+MAX_LINES = 40000
+
+
 class Out:
     """Chunks of lifted C, shared by the modules: one dispatch table."""
     def __init__(self, out, split):
         self.out, self.split, self.chunk, self.files, self.entries = out, split, [], 0, []
+        self.lines = 0
 
     def add(self, body, addr, name):
         self.chunk.append((body, addr, name))
         self.entries.append((addr, name))
-        if len(self.chunk) >= self.split:
+        self.lines += body.count('\n')
+        if len(self.chunk) >= self.split or self.lines >= MAX_LINES:
             self.flush()
 
     def flush(self):
@@ -136,6 +145,7 @@ class Out:
             write_chunk(self.out, self.files, self.chunk)
             self.files += 1
             self.chunk = []
+            self.lines = 0
 
 
 def lift(path, catalog, md, out):
