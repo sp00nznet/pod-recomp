@@ -7,11 +7,10 @@
 - **CD music.** The host's `cdaudio` is silent. The music is track 2 of the user's
   `POD2_0.BIN` (raw 2352-byte audio sectors after the data track): play it through
   `waveOut` when the game asks MCI to play, and loop it as the CD did.
-- **The videos.** `intropod.avi`, `credits.avi` and the rest are Indeo 4.1; the host
-  refuses them because Windows has no decoder. twistedmetal-recomp lifted Intel's Indeo 4.1
-  codec from its disc; registered with VfW in this host, POD's own player would play them.
-- **The intro stills in the recording.** POD draws them with DrawDib on the window's DC,
-  which `--record` (DirectDraw presents only) does not see.
+- **Skipping a video by key.** Esc, Space or Enter during the intro stops it, but the menu
+  after it never flips and takes no keys, in the original code under this host too; Esc on
+  the main menu does the same. Until then a player has to let the intro play out, and the
+  conformance run cannot drive a race of its own. Leads are in docs/movies.md.
 - **Windowed play checked on a real screen**, through offstage: focus, the real keyboard,
   the presenter's scaling, and the mouse cursor POD clips.
 - **A clean-machine run of Setup.cmd** on a netlab test VM with a disc image.

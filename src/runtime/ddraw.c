@@ -21,6 +21,7 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <mmsystem.h>
+#include <vfw.h>
 #include <ddraw.h>
 #include <dwmapi.h>
 #include <stdio.h>
@@ -356,7 +357,7 @@ static HRESULT WINAPI s_Blt(IDirectDrawSurface* p, RECT* dr, IDirectDrawSurface*
             int dx = drc.left, dy = drc.top;
             if (clip(d, s, &src_rc, &dx, &dy)) copy_rect(d, dx, dy, s, src_rc, keyed);
         } else if (dw > 0 && dh > 0 && sw > 0 && sh > 0) {
-            /* ponytail: nearest-neighbour stretch, 8-bit only and unclipped
+            /* ponytail: nearest-neighbor stretch, 8-bit only and unclipped
              * beyond the surfaces; the game's stretches are all on screen. */
             for (int y = 0; y < dh; y++) {
                 int ty = drc.top + y, fy = src_rc.top + y * sh / dh;
@@ -424,7 +425,7 @@ static HRESULT WINAPI s_GetDC(IDirectDrawSurface* p, HDC* o) {
     s->dc = CreateCompatibleDC(NULL);
     SelectObject(s->dc, s->dib);
     Palette* pal = s->pal ? s->pal : g_primary ? g_primary->pal : NULL;
-    if (s->bpp == 8 && pal) {              /* GDI maps colours through the DIB's table */
+    if (s->bpp == 8 && pal) {              /* GDI maps colors through the DIB's table */
         RGBQUAD q[256];
         for (int i = 0; i < 256; i++) {
             q[i].rgbRed = pal->e[i].peRed; q[i].rgbGreen = pal->e[i].peGreen;
@@ -640,7 +641,7 @@ static HRESULT WINAPI dd_EnumSurfaces(IDirectDraw* p, DWORD f, DDSURFACEDESC* d,
 static HRESULT WINAPI dd_FlipToGDISurface(IDirectDraw* p) { (void)p; return DD_OK; }
 static HRESULT WINAPI dd_GetCaps(IDirectDraw* p, DDCAPS* drv, DDCAPS* hel) {
     (void)p;
-    /* A card from 1997 that can do what the game asks: blits, colour keys,
+    /* A card from 1997 that can do what the game asks: blits, color keys,
      * a palette, flipping. */
     TRACE("GetCaps\n");
     DDCAPS* c[2] = { drv, hel };
@@ -812,6 +813,25 @@ void ddh_shim_ShowWindow(void) {
 void ddh_shim_GetDC(void) {
     HWND w = (HWND)(uintptr_t)ARG(0);
     RET(w && w == g_wnd ? (uintptr_t)g_screen_dc : (uintptr_t)GetDC(w), 1);
+}
+/* POD draws its stills and videos with DrawDib on GetWindowDC(window), not
+ * through DirectDraw: the same screen DC, and each DrawDibDraw into it is a
+ * present, since the DC is held for a whole video. */
+void ddh_shim_GetWindowDC(void) {
+    HWND w = (HWND)(uintptr_t)ARG(0);
+    RET(w && w == g_wnd ? (uintptr_t)g_screen_dc : (uintptr_t)GetWindowDC(w), 1);
+}
+void ddh_shim_DrawDibDraw(void) {
+    uint32_t* a = (uint32_t*)(uintptr_t)(g_esp + 4);
+    HDC dc = (HDC)(uintptr_t)a[1];
+    BOOL r = DrawDibDraw((HDRAWDIB)(uintptr_t)a[0], dc, (int)a[2], (int)a[3], (int)a[4], (int)a[5],
+                         (LPBITMAPINFOHEADER)(uintptr_t)a[6], (void*)(uintptr_t)a[7],
+                         (int)a[8], (int)a[9], (int)a[10], (int)a[11], a[12]);
+    if (dc == g_screen_dc && r) {
+        GdiFlush();
+        present_("drawdib", 0);
+    }
+    RET(r, 13);
 }
 void ddh_shim_ReleaseDC(void) {
     HWND w = (HWND)(uintptr_t)ARG(0);

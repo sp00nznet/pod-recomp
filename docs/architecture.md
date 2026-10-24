@@ -22,7 +22,7 @@ Three things about the binary shape everything below:
   for `.bss`, native32 since pcrecomp#128).
 - **Watcom keeps switch tables in the code segment**, in front of the function
   that uses them, and shares function tails freely. A disassembler can take a
-  table for code, and a lifted body can fall off its end into a neighbour.
+  table for code, and a lifted body can fall off its end into a neighbor.
 - **The 2D blit library rewrites its own code** (27 immediates in
   `0x004D81xx`-`0x004D85xx`), and calls `VirtualProtect` on its code section
   to be allowed to.
@@ -32,12 +32,13 @@ Three things about the binary shape everything below:
 ```
 POD2_0.BIN / ISO / CD ── tools\extract_disc.py ── game\  (+ game\UbiSoft\Ubi.ini, from Setup)
                                                     │
-                     game\PODMMX.EXE ── tools\catalog.py ── work\functions.json
+  game\PODMMX.EXE, game\INSTALL\IR41_32.DLL ── tools\catalog.py ── work\functions.json,
+                                                               work\indeo\functions.json
                                         (pcrecomp disasm32 + seeds)      │
                                                                 run_lift.py
                                                     (pcrecomp generate.py + lift32)
                                                                          │
-                                                        src\recomp\gen\*.c  (1.9 M lines)
+                                                        src\recomp\gen\*.c  (4.3 M lines)
                                                                          │
            src\runtime\*.c + pcrecomp runtime\native32 ── build.cmd / netlab ── pod.exe
 ```
@@ -79,6 +80,7 @@ What the host adds, in `src/runtime/`:
 | `ddraw.c` | DirectDraw (v1 and v2) over memory surfaces: no mode change, no exclusive screen. A Flip is a present: to the window, to ffmpeg (`--record`), or nowhere (`--headless`) |
 | `present.c` | The window's picture when there is a screen: scaling, aspect, a Direct3D 11 presenter |
 | `dinput.c` | Windows' DirectInput with three slots replaced: Acquire, GetDeviceState (scripted keys) and SetEventNotification (to wake the game when one changes) |
+| `indeo.c` | The videos' codec, IR41_32.DLL from the disc, lifted with the game, mapped at its own base and installed as a Video for Windows function driver ([movies.md](movies.md)) |
 | `oracle.c` | `--original`: the shipping machine code under the same host, for comparing |
 
 Why each piece exists, with the symptom that called for it, is in

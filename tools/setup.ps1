@@ -171,15 +171,15 @@ else {
 }
 
 # ---------------------------------------------------------------- catalog
-Step 4 "Finding the functions in PODMMX.EXE (about 5 minutes)"
+Step 4 "Finding the functions in PODMMX.EXE and its video codec (about 10 minutes)"
 if ((Test-Path 'work\functions.json') -and -not $Force) { Say "  Already done (skipping)." }
 else {
   $env:PCRECOMP = $Toolkit
-  Run "Cataloguing" ($pyargs + @('tools\catalog.py'))
+  Run "Cataloging" ($pyargs + @('tools\catalog.py'))
 }
 
 # ---------------------------------------------------------------- lift
-Step 5 "Lifting PODMMX.EXE to C (about a minute)"
+Step 5 "Lifting them to C (about two minutes)"
 if ((Test-Path 'src\recomp\gen\recomp_dispatch.c') -and -not $Force) { Say "  Already done (skipping)." }
 else {
   $env:PCRECOMP = $Toolkit

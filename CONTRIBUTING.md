@@ -20,19 +20,19 @@ the README.
 
 ## Where your code comes from
 
-Contributions have to be your own work or under a licence compatible with MIT.
+Contributions have to be your own work or under a license compatible with MIT.
 The live risk is a fix ported from a GPL or LGPL project, which would relicense
 it by accident and is very hard to untangle later. The ones most likely to be
 open next to this are **Wine** and **ReactOS** (LGPL/GPL, for any Win32 or
-DirectX behaviour), **DOSBox** (GPL), and **dgVoodoo** (closed source). Reading
-them to understand a behaviour is fine; copying code from them is not. If
+DirectX behavior), **DOSBox** (GPL), and **dgVoodoo** (closed source). Reading
+them to understand a behavior is fine; copying code from them is not. If
 something in your PR came from somewhere, say where.
 
 ## Claims are measured, not assumed
 
 The oracle is `--original`: it runs the shipping `PODMMX.EXE` machine code
 under the same host and the same scripted keys as the recompiled one. A change
-that claims to fix a behaviour should say what the original does in the same
+that claims to fix a behavior should say what the original does in the same
 run, and `tools/conformance.py` should still pass. A change to the lifter or
 the runtime belongs in [pcrecomp](https://github.com/sp00nznet/pcrecomp), with
 a test there.

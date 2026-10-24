@@ -24,6 +24,7 @@
 #include "ddraw_host.h"
 #include "dinput_host.h"
 #include "oracle.h"
+#include "indeo.h"
 
 extern const uint32_t pod_entry_va;       /* recomp_dispatch.c */
 
@@ -149,6 +150,17 @@ static DWORD WINAPI heartbeat(LPVOID unused) {
     }
 }
 
+/* Joysticks and wheels: POD polls WINMM's joystick 0 (joyGetPosEx) and drives
+ * its menus with it. Headless, a controller plugged into the machine is real
+ * input like the keyboard, and it walked the menus into a car select on its
+ * own, so there is none; windowed, Windows' answers go through. */
+static void shim_joyGetPosEx(void) {
+    RET(g_headless ? JOYERR_UNPLUGGED : joyGetPosEx(ARG(0), (LPJOYINFOEX)(uintptr_t)ARG(1)), 2);
+}
+static void shim_joyGetDevCapsA(void) {
+    RET(g_headless ? JOYERR_UNPLUGGED : joyGetDevCapsA(ARG(0), (LPJOYCAPSA)(uintptr_t)ARG(1), ARG(2)), 3);
+}
+
 /* ------------------------------------------------------------ the CD */
 
 /* The game wants its CD: it looks for a drive GetDriveTypeA calls
@@ -226,6 +238,9 @@ static int g_cd_playing;
 
 static void shim_mciSendCommandA(void) {
     uint32_t dev = ARG(0), msg = ARG(1), flags = ARG(2), p = ARG(3);
+    if (getenv("POD_MCI_TRACE"))
+        fprintf(stderr, "[mci] dev %X msg %04X flags %08X item %08X\n", dev, msg, flags,
+                msg == MCI_STATUS && p ? MEM32(p + 8) : 0);
     if (msg == MCI_OPEN && p && (flags & MCI_OPEN_TYPE)) {
         uint32_t type = MEM32(p + 8);         /* MCI_OPEN_PARMSA.lpstrDeviceType */
         int cd = (flags & MCI_OPEN_TYPE_ID) ? LOWORD(type) == MCI_DEVTYPE_CD_AUDIO
@@ -256,14 +271,13 @@ static void shim_mciSendCommandA(void) {
     RET(0, 4);
 }
 
-/* The videos (intropod.avi, which attract mode plays after its race) are
- * Indeo 4.1, and Windows has had no Indeo decoder for years: the file opens,
- * AVIStreamGetFrameOpen returns NULL, and POD reads the frame through that
- * NULL and faults. The original exe does the same on a current PC. A video
- * with no decoder is refused at AVIFileOpenA, the error POD expects for a
- * missing file, and it goes on without it.
- * ponytail: no video; the Indeo 4.1 codec lifted in twistedmetal-recomp is
- * the upgrade (ROADMAP.md). */
+/* The videos are Indeo 4.1, which Windows has had no decoder for in years.
+ * Normally the disc's own codec is lifted and installed (indeo.c), and this
+ * passes everything through. Without it (--no-codec, or a disc with no
+ * INSTALL\IR41_32.DLL) the file opens, AVIStreamGetFrameOpen returns NULL,
+ * and POD reads a frame through that NULL and faults, as the original exe
+ * does on a current PC. So a video with no decoder is refused here, the
+ * error POD expects for a missing file, and it goes on without it. */
 typedef HRESULT (WINAPI *avi_open_t)(void**, const char*, UINT, void*);
 typedef HRESULT (WINAPI *avi_stream_t)(void*, void**, DWORD, LONG);
 typedef void* (WINAPI *avi_getframe_open_t)(void*, void*);
@@ -300,6 +314,40 @@ static void shim_AVIFileOpenA(void) {
     RET((uint32_t)r, 4);
 }
 
+/* Before it plays a video POD asks SYSTEM.INI whether an Indeo 4.1 driver is
+ * installed ([Drivers32] VIDC.IV41), and shows "You must install Indeo"
+ * instead when there is none. With the lifted codec installed (indeo.c),
+ * the answer is yes. */
+static int g_have_codec;
+static void shim_GetPrivateProfileStringA(void) {
+    const char *sect = (const char*)(uintptr_t)ARG(0), *key = (const char*)(uintptr_t)ARG(1);
+    char* buf = (char*)(uintptr_t)ARG(3);
+    uint32_t size = ARG(4);
+    if (g_have_codec && sect && key && !_stricmp(sect, "Drivers32") && !_stricmp(key, "VIDC.IV41") && size) {
+        lstrcpynA(buf, "ir41_32.dll", size);
+        RET(strlen(buf), 6);
+        return;
+    }
+    RET(GetPrivateProfileStringA(sect, key, (const char*)(uintptr_t)ARG(2), buf, size,
+                                 (const char*)(uintptr_t)ARG(5)), 6);
+}
+
+/* ...and then that the driver file is in the system folder
+ * (GetSystemDirectoryA + "\IR41_32.DLL", FindFirstFileA). The lifted one is
+ * the disc's own copy, so that lookup finds game\INSTALL\IR41_32.DLL. */
+static void shim_FindFirstFileA(void) {
+    const char* name = (const char*)(uintptr_t)ARG(0);
+    size_t n = name ? strlen(name) : 0;
+    if (g_have_codec && n >= 12 && !_stricmp(name + n - 12, "\\IR41_32.DLL")) {
+        char path[MAX_PATH];
+        _snprintf(path, sizeof path - 1, "%sINSTALL\\IR41_32.DLL", g_game);
+        path[sizeof path - 1] = 0;
+        RET((uintptr_t)FindFirstFileA(path, (LPWIN32_FIND_DATAA)(uintptr_t)ARG(1)), 2);
+        return;
+    }
+    RET((uintptr_t)FindFirstFileA(name, (LPWIN32_FIND_DATAA)(uintptr_t)ARG(1)), 2);
+}
+
 /* POD's installer records the install in <Windows>\UbiSoft\Ubi.ini
  * ([POD2_0] Directory, Language, Configuration), and the game quits quietly
  * without it. The game folder stands in for the Windows folder, so
@@ -334,6 +382,10 @@ static native32_shim_t g_shims[] = {
     { "GetWindowsDirectoryA", shim_GetWindowsDirectoryA },
     { "mciSendCommandA", shim_mciSendCommandA },
     { "AVIFileOpenA", shim_AVIFileOpenA },
+    { "GetPrivateProfileStringA", shim_GetPrivateProfileStringA },
+    { "FindFirstFileA", shim_FindFirstFileA },
+    { "joyGetPosEx", shim_joyGetPosEx },
+    { "joyGetDevCapsA", shim_joyGetDevCapsA },
     DDH_SHIMS,
     DIH_SHIMS,
     { "MessageBoxA", shim_MessageBoxA },          /* headless only: the last entry */
@@ -427,9 +479,11 @@ static DWORD WINAPI watchdog(LPVOID unused) {
 
 int main(int argc, char** argv) {
     const char* game = "game";
-    int run = 0, scale = 0, original = 0, nlift = 0;
+    int run = 0, scale = 0, original = 0, nlift = 0, codec_native = 0, no_codec = 0;
+    const char *test_avi = NULL, *test_out = NULL;
     static uint32_t lift[256];
     ddh_opts_t o = { 0 };
+    indeo_hold();                        /* before anything else can land on 0x10000000 */
     for (int i = 1; i < argc; i++) {
         int n = recomp_trace_arg(argc, argv, i);
         if (n) { i += n - 1; continue; }
@@ -466,6 +520,9 @@ int main(int argc, char** argv) {
         else if (!strcmp(argv[i], "--callbacks")) native32_trace_callbacks = 1;
         else if (!strcmp(argv[i], "--ddraw-trace")) o.trace = 1;
         else if (!strcmp(argv[i], "--original")) original = 1;
+        else if (!strcmp(argv[i], "--codec-native")) codec_native = 1;
+        else if (!strcmp(argv[i], "--no-codec")) no_codec = 1;
+        else if (!strcmp(argv[i], "--decode-test") && i + 2 < argc) { test_avi = argv[i + 1]; test_out = argv[i + 2]; i += 2; }
         else if (!strcmp(argv[i], "--lifted") && i + 1 < argc)      /* with --original */
             for (char* t = strtok(argv[++i], ","); t && nlift < 256; t = strtok(NULL, ","))
                 lift[nlift++] = strtoul(t, NULL, 16);
@@ -473,7 +530,8 @@ int main(int argc, char** argv) {
             printf("usage: pod [--run] [--headless] [--record out.mp4] [--frames N]\n"
                    "           [--shot N:file.bmp] [--diff A,B] [--key NAME@MS[+HOLD]]\n"
                    "           [--scale N] [--game game] [--watchdog S] [--native-trace]\n"
-                   "           [--callbacks] [--ddraw-trace] [--original [--lifted VA,...]]\n");
+                   "           [--callbacks] [--ddraw-trace] [--original [--lifted VA,...]]\n"
+                   "           [--codec-native] [--no-codec] [--decode-test AVI OUT]\n");
             recomp_trace_help();
             return argv[i][1] == 'h' || argv[i][2] == 'h' ? 0 : 1;
         }
@@ -500,6 +558,12 @@ int main(int argc, char** argv) {
         for (int i = 0; i < g_nin; i++)
             CloseHandle(CreateThread(NULL, 0, input_thread, (LPVOID)(intptr_t)i, 0, NULL));
         CloseHandle(CreateThread(NULL, 0, heartbeat, NULL, 0, NULL));
+        {   /* the codec too, as original code, so the reference plays the videos */
+            char codec[MAX_PATH];
+            _snprintf(codec, sizeof codec - 1, "%sINSTALL\\IR41_32.DLL", g_game);
+            codec[sizeof codec - 1] = 0;
+            g_have_codec = indeo_start(codec, g_shims, nshims, 1);
+        }
         oracle_lift(lift, nlift);
         return oracle_run(g_guest_exe, POD_BASE, g_shims, nshims, g_hooks, 1);
     }
@@ -509,6 +573,12 @@ int main(int argc, char** argv) {
     if (!span) { fprintf(stderr, "cannot map %s at 0x%08X\n", g_guest_exe, POD_BASE); return 1; }
     printf("  mapped PODMMX.EXE: 0x%08X-0x%08X\n", POD_BASE, POD_BASE + span);
     if (native32_bind(POD_BASE, g_shims, nshims)) return 1;
+    /* The videos' Indeo 4.1 codec, from the disc, lifted with the game (indeo.c). */
+    char codec[MAX_PATH];
+    _snprintf(codec, sizeof codec - 1, "%sINSTALL\\IR41_32.DLL", g_game);
+    codec[sizeof codec - 1] = 0;
+    g_have_codec = !no_codec && indeo_start(codec, g_shims, nshims, codec_native);
+    if (test_avi) return g_have_codec ? indeo_decode_test(test_avi, test_out) : 1;
     if (!run) {
         printf("\n(dry run: image mapped and bound; --run enters 0x%08X)\n", pod_entry_va);
         return 0;

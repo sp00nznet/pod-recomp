@@ -32,6 +32,8 @@ void ddh_shim_CreateWindowExA(void);
 void ddh_shim_ShowWindow(void);
 void ddh_shim_GetDC(void);
 void ddh_shim_ReleaseDC(void);
+void ddh_shim_GetWindowDC(void);
+void ddh_shim_DrawDibDraw(void);
 void ddh_shim_RealizePalette(void);
 void ddh_shim_GetSystemPaletteEntries(void);
 void ddh_hook_module(const char* dll);   /* a native DLL that draws into the game window (SMACKW32) */
@@ -41,6 +43,8 @@ void ddh_hook_module(const char* dll);   /* a native DLL that draws into the gam
     { "ShowWindow", ddh_shim_ShowWindow }, \
     { "GetDC", ddh_shim_GetDC }, \
     { "ReleaseDC", ddh_shim_ReleaseDC }, \
+    { "GetWindowDC", ddh_shim_GetWindowDC }, \
+    { "DrawDibDraw", ddh_shim_DrawDibDraw }, \
     { "RealizePalette", ddh_shim_RealizePalette }, \
     { "GetSystemPaletteEntries", ddh_shim_GetSystemPaletteEntries }
 

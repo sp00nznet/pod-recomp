@@ -31,22 +31,25 @@ its `lift32` writes the C, and its `native32` runtime hosts it.
 
 | | |
 |---|---|
-| Boot, CD check, config, intro | ✅ (the intro stills draw to the window, not yet to `--record`) |
+| Boot, CD check, config | ✅ |
+| Intro and videos | ✅ Indeo 4.1, **through the disc's own codec, lifted with the game**: byte-identical to Intel's code on all 13,722 frames ([docs/movies.md](docs/movies.md)) |
+| Skipping a video by key | ❌ the menu after it is dead; let the intro play out (4 min) |
 | Main menu | ✅ drawn, takes keys (`--key`) |
 | Attract-mode races | ✅ Downtown, seven cars, **the 3D world drawn**, HUD, laps and standings; then a four-way split-screen race |
 | Your own race (One Player) | ⏳ not yet driven through by a script |
 | CD music | 🔇 the CD audio device answers but plays nothing |
-| Videos (intro, credits) | 🚫 Indeo 4.1, which Windows no longer decodes: skipped, as if missing |
 | Sound effects | ✅ through Windows' `waveOut` |
 | Windowed play on a screen | ⚠️ the window and presenter are in, but only headless runs have been checked |
-| Conformance | **11/11** milestones, 0 lift errors ([below](#conformance)) |
+| Conformance | **14/14** milestones, 0 lift errors ([below](#conformance)) |
 
 The track did not draw at all before October 2026; relifting on the current pcrecomp
 fixed it. How, and every other wall on the way, is in [docs/bringup.md](docs/bringup.md).
 
 ## Screenshots
 
-From a headless run (`--record`): the main menu, and POD's attract-mode race.
+From headless runs (`--record`): the intro, the main menu, and POD's attract-mode races.
+
+![The intro, decoded by the lifted Indeo 4.1 codec](docs/screenshots/intro.png)
 
 ![POD Gold's main menu, recompiled](docs/screenshots/menu.png)
 
@@ -75,11 +78,6 @@ or an ISO). The CD's data track is copied into `game\`; nothing is downloaded bu
    keeps the details in `setup.log`.
 5. Double-click **`POD Gold (recomp).cmd`**.
 
-Setup needs pcrecomp with [pcrecomp#128](https://github.com/sp00nznet/pcrecomp/pull/128).
-Until that is merged into pcrecomp's `main`, check out its branch in `..\pcrecomp`
-(`git -C ..\pcrecomp checkout fix/native32-watcom-sections`) or Setup will stop and say
-the toolkit is too old.
-
 ### Step by step
 
 The same steps by hand; Setup.cmd runs exactly these.
@@ -92,7 +90,6 @@ Ninja; Git. [ffmpeg](https://ffmpeg.org/) on `PATH` for `--record` and the confo
 
    ```
    git clone https://github.com/sp00nznet/pcrecomp ..\pcrecomp
-   git -C ..\pcrecomp checkout fix/native32-watcom-sections   # until pcrecomp#128 is merged
    set PCRECOMP=%CD%\..\pcrecomp
    ```
 
@@ -125,26 +122,31 @@ Ninja; Git. [ffmpeg](https://ffmpeg.org/) on `PATH` for `--record` and the confo
    Version=2.11
    ```
 
-4. **Find the functions** (about 5 minutes):
+4. **Find the functions** in the game and in its video codec, `INSTALL\IR41_32.DLL`
+   from the disc (about 10 minutes):
 
    ```
    py -3 tools\catalog.py
    ```
    ```
-   [catalog] 6 code addresses taken as immediates are not entries: 0x0040F3E8, 0x0043F108, 0x004696F9, 0x004A0DC8, 0x004BD72C, 0x004CF938
-   [catalog] 9239 functions -> ...\work\functions.json
+   [catalog] PODMMX.EXE: 6 code addresses taken as immediates are not entries: 0x0040F3E8, ...
+   [catalog] PODMMX.EXE: 9239 functions -> ...\work\functions.json
+   [catalog] IR41_32.DLL: 12 code addresses taken as immediates are not entries: 0x10003377, ...
+   [catalog] IR41_32.DLL: 2608 functions -> ...\work\indeo\functions.json
    ```
 
-5. **Lift to C** (under a minute):
+5. **Lift both to C** (about two minutes):
 
    ```
    py -3 run_lift.py
    ```
    ```
-   [*]   27 self-modified immediates: 0x004D8192, ...
+   [*]   9257 lifted, 18 outside branch targets added, 0 errors
+   [*] IR41_32.DLL: base=0x10000000 code=0x10001000-0x10063200 IAT=110 catalog=2608
+   [*]   2608 lifted, 0 outside branch targets added, 0 errors
    ============================================================
-     lifted 9257   errors 0   no terminator 1054
-     1,878,091 lines of C in 47 files (47 changed), 33.7s
+     lifted 11865   errors 0   no terminator 1066
+     4,304,639 lines of C in 60 files (60 changed), 89.8s
    ============================================================
    ```
 
@@ -181,21 +183,32 @@ build\pod.exe --run --headless --key ENTER@12000 --key DOWN@14000+300
 | `--game DIR` | The game folder (default `game`) |
 | `--watchdog S` | End after S seconds with a report of where every thread is |
 | `--original` | Run the shipping machine code under the same host, for comparison |
+| `--no-codec` | Do not install the lifted video codec: POD shows "You must install Indeo" and skips its videos |
+| `--decode-test AVI OUT`, `--codec-native` | Decode a video's frames to a file; with the codec's original machine code instead of its lift ([docs/movies.md](docs/movies.md)) |
 | `--native-trace`, `--callbacks`, `--ddraw-trace` | Every call to Windows; every call from Windows into the game; every DirectDraw call |
 
-With no input, POD's menu starts a race by itself after a few seconds (attract mode),
-so `--headless --record` alone shows the menu, a race, the menu again, then a
-four-way split-screen race.
+With no input, POD plays its four-minute intro, then its menu starts a race by itself
+after a few seconds (attract mode): the menu, a race, the menu again, then a four-way
+split-screen race. Don't skip the intro with a key for now: the menu after a skipped
+video takes no input ([docs/movies.md](docs/movies.md)).
 
 ## Conformance
 
-`py -3 tools\conformance.py` runs the host headless for 120 seconds and scores eleven
-milestones (image bound, the CD found, DirectDraw, past the CD and sound checks, the
-menu, the attract race starting, the 3D world drawn, the race moving, back to the menu,
-a second attract race after the video, no fault) from its output and its recording, plus lift health from the generated tree.
+`py -3 tools\conformance.py` runs the host headless twice and scores fourteen milestones
+from its output and its recordings, plus lift health from the generated tree:
+
+- 20 seconds of the intro: the lifted codec starts, the intro video plays, no fault.
+- 120 seconds with videos off (`--no-codec`, since the intro alone is four minutes): image
+  bound, the CD found, DirectDraw, past the CD and sound checks, the menu, the attract race
+  starting, the 3D world drawn, the race moving, back to the menu, a second attract race,
+  no fault.
+
+`py -3 tools\verify_indeo.py` checks the codec on its own: every video on the disc
+decoded by the lift, by the codec's original machine code and by ffmpeg.
 It compares against [`conformance.json`](conformance.json) and fails on any drop.
 
-**Current: 11/11 milestones; 9,257 functions lifted, 0 errors, 3 unresolvable tail labels.**
+**Current: 14/14 milestones; 11,865 functions lifted (game and codec), 0 errors, 3 unresolvable
+tail labels. Codec: byte-identical to the original on 6 of 6 videos, 13,722 frames.**
 
 The corpus is your disc, which cannot be redistributed: without `game\`, a lift and a
 build, the harness prints `SKIP` and exits 0.

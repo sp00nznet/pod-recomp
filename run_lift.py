@@ -1,18 +1,25 @@
 #!/usr/bin/env python3
-"""POD Gold lift driver: game/PODMMX.EXE + work/functions.json -> src/recomp/gen/.
+"""POD Gold lift driver: the game and its video codec -> src/recomp/gen/.
 
-PODMMX.EXE is a Watcom C/C++ build (linker 2.18): its code section is named
-AUTO, not .text, and every section has VirtualSize 0, so sizes come from the
-raw data. The catalog is pcrecomp's disasm32 (tools/catalog.py); no IDA.
+Two modules, one dispatch table (Twisted Metal's run_lift.py does the same):
 
-    py -3 tools/catalog.py      # work/functions.json
+* game/PODMMX.EXE, a Watcom C/C++ build (linker 2.18): its code section is
+  named AUTO, not .text, and every section has VirtualSize 0, so sizes come
+  from the raw data.
+* game/INSTALL/IR41_32.DLL, Intel's Indeo 4.1 codec R4.11.15.91 (MMX), which
+  the disc ships for its videos and which Windows no longer has. The host maps
+  it at its own base, 0x10000000 (docs/movies.md).
+
+The catalogs are pcrecomp's disasm32 (tools/catalog.py); no IDA.
+
+    py -3 tools/catalog.py      # work/functions.json, work/indeo/functions.json
     py -3 run_lift.py
 
 Same shape as Streets of SimCity's run_lift.py, plus what this game needs:
-self-modified immediates (find_patch_sites). Only the chunks whose text
-changed are rewritten, so a lifter fix recompiles what it touched. The
-generated C is recompiler output and is never committed (REPO_RULES
-section 3); docs/bringup.md has how each fix was found.
+self-modified immediates (find_patch_sites) and the CPU patches. Only the
+chunks whose text changed are rewritten, so a lifter fix recompiles what it
+touched. The generated C is recompiler output and is never committed
+(REPO_RULES section 3); docs/bringup.md has how each fix was found.
 """
 import argparse
 import filecmp
@@ -39,13 +46,18 @@ from generate import (EXTENT_REACH, find_splits, true_extent,  # noqa: E402
 from lift32 import Lifter                                   # noqa: E402
 from pe_analyze import analyze_pe, build_iat_map            # noqa: E402
 
-EXE = os.path.join(_HERE, 'game', 'PODMMX.EXE')
-CATALOG = os.path.join(_HERE, 'work', 'functions.json')
 OUT = os.path.join(_HERE, 'src', 'recomp', 'gen')
 STATS = os.path.join(_HERE, 'work', 'lift_stats.json')
 
-# POD Gold's PODMMX.EXE: its PE timestamp (1997-10-26). docs/BINARIES.md.
-EXE_STAMP = 0x34538B18
+# (image, catalog, the PE timestamp of the one build supported, what it is).
+# Another build would lift, but the patches are at this build's addresses.
+MODULES = [
+    (os.path.join(_HERE, 'game', 'PODMMX.EXE'), os.path.join(_HERE, 'work', 'functions.json'),
+     0x34538B18, "POD Gold's PODMMX.EXE (1997-10-26), docs/BINARIES.md"),
+    (os.path.join(_HERE, 'game', 'INSTALL', 'IR41_32.DLL'),
+     os.path.join(_HERE, 'work', 'indeo', 'functions.json'),
+     0x326D51E5, "Indeo 4.1 R4.11.15.91 from the POD Gold disc's INSTALL\\, docs/movies.md"),
+]
 
 # Lines of C added after one lifted instruction (apply_patches), for what the
 # lift cannot do by itself.
@@ -101,18 +113,36 @@ def apply_patches(body, patches):
 
 
 def exe_stamp(path):
-    """The PE header's TimeDateStamp: which build of the game an exe is."""
+    """The PE header's TimeDateStamp: which build of a module this is."""
     with open(path, 'rb') as f:
         head = f.read(4096)
     nt = int.from_bytes(head[0x3C:0x40], 'little')
     return int.from_bytes(head[nt + 8:nt + 12], 'little')
 
 
-def lift(path, md, out, split):
+class Out:
+    """Chunks of lifted C, shared by the modules: one dispatch table."""
+    def __init__(self, out, split):
+        self.out, self.split, self.chunk, self.files, self.entries = out, split, [], 0, []
+
+    def add(self, body, addr, name):
+        self.chunk.append((body, addr, name))
+        self.entries.append((addr, name))
+        if len(self.chunk) >= self.split:
+            self.flush()
+
+    def flush(self):
+        if self.chunk:
+            write_chunk(self.out, self.files, self.chunk)
+            self.files += 1
+            self.chunk = []
+
+
+def lift(path, catalog, md, out):
     info = analyze_pe(path)
     iat = build_iat_map(info)
     cs, ce = info.code_start, info.code_end
-    cat = json.load(open(CATALOG))
+    cat = json.load(open(catalog))
     byaddr = {f['address']: f for f in cat['functions'] if cs <= f['address'] < ce}
     print('[*] %s: base=0x%08X code=0x%08X-0x%08X IAT=%d catalog=%d'
           % (os.path.basename(path), info.image_base, cs, ce, len(iat), len(byaddr)))
@@ -120,8 +150,8 @@ def lift(path, md, out, split):
     text = next(s for s in info.sections if cs == info.image_base + s.virtual_address)
     code = open(path, 'rb').read()[text.raw_offset:text.raw_offset + text.raw_size]
     patch_sites = find_patch_sites(md, code, cs, ce, [(a, f['end']) for a, f in byaddr.items()])
-    print('[*]   %d self-modified immediates: %s'
-          % (len(patch_sites), ', '.join('0x%08X' % s for s in sorted(patch_sites))))
+    print('[*]   %d self-modified immediates%s' % (len(patch_sites), (': ' + ', '.join(
+        '0x%08X' % s for s in sorted(patch_sites))) if len(patch_sites) <= 30 else ''))
     # Known targets become RECOMP_CALL; anything else a decoded `call` names
     # becomes RECOMP_ICALL, which reports at run time instead of failing the build.
     # precise carry: adc/sbb take their carry from the flag state that set it.
@@ -130,10 +160,9 @@ def lift(path, md, out, split):
     starts = {a for a in byaddr if byaddr[a].get('entry_kind') != 'alias'}
     starts -= find_splits(md, code, cs, ce, starts)
 
-    stats = {'lifted': 0, 'errors': 0, 'no_terminator': 0, 'files': 0}
-    entries, chunk = [], []
-    # A direct branch that leaves a body to an address nothing catalogued is a
-    # tail call or a jump into a neighbour's shared tail (Watcom shares them
+    stats = {'lifted': 0, 'errors': 0, 'no_terminator': 0}
+    # A direct branch that leaves a body to an address nothing cataloged is a
+    # tail call or a jump into a neighbor's shared tail (Watcom shares them
     # freely). Either way the target has to be dispatchable, so each round's
     # outside targets become entries of the next.
     todo, added = sorted(byaddr), 0
@@ -158,22 +187,15 @@ def lift(path, md, out, split):
             except Exception as e:                  # noqa: BLE001 -- counted, not hidden
                 body = '/* ERROR %s: %s */\nvoid %s(void) { }\n' % (name, e, name)
                 stats['errors'] += 1
-            chunk.append((body, addr, name))
-            entries.append((addr, name))
-            if len(chunk) >= split:
-                write_chunk(out, stats['files'], chunk)
-                stats['files'] += 1
-                chunk = []
+            out.add(body, addr, name)
         todo = sorted(t for t in outside if cs <= t < ce and t not in byaddr)
         for t in todo:
             byaddr[t] = {'address': t}
         added += len(todo)
-    if chunk:
-        write_chunk(out, stats['files'], chunk)
-        stats['files'] += 1
     stats['lifted'] = len(byaddr)
-    print('[*]   %d outside branch targets added' % added)
-    return entries, info.image_base + info.entry_point_rva, stats
+    print('[*]   %d lifted, %d outside branch targets added, %d errors'
+          % (len(byaddr), added, stats['errors']))
+    return info.image_base + info.entry_point_rva, stats
 
 
 def sync(new, out):
@@ -197,16 +219,15 @@ def sync(new, out):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument('--exe', default=EXE)
     ap.add_argument('--out', default=OUT)
     ap.add_argument('--split', type=int, default=200, help='functions per .c file')
     args = ap.parse_args()
-    if not os.path.exists(CATALOG):
-        sys.exit('no catalog at %s -- run tools/catalog.py first (README, Step by step)' % CATALOG)
-    stamp = exe_stamp(args.exe)
-    if stamp != EXE_STAMP:
-        sys.exit('%s is not the build this project supports: its PE timestamp is 0x%08X, '
-                 'POD Gold\'s PODMMX.EXE is 0x%08X (docs/BINARIES.md).' % (args.exe, stamp, EXE_STAMP))
+    for path, catalog, stamp, what in MODULES:
+        if not os.path.exists(catalog):
+            sys.exit('no catalog at %s -- run tools/catalog.py first (README, Step by step)' % catalog)
+        if exe_stamp(path) != stamp:
+            sys.exit('%s is not the build this project supports: its PE timestamp is 0x%08X, '
+                     'expected 0x%08X: %s.' % (path, exe_stamp(path), stamp, what))
 
     md = Cs(CS_ARCH_X86, CS_MODE_32)
     md.detail = True
@@ -215,24 +236,40 @@ def main():
     os.makedirs(args.out)
 
     t0 = time.time()
-    entries, oep, stats = lift(args.exe, md, args.out, args.split)
+    out = Out(args.out, args.split)
+    entries_va, stats = [], {'lifted': 0, 'errors': 0, 'no_terminator': 0}
+    for path, catalog, _, _ in MODULES:
+        entry, s = lift(path, catalog, md, out)
+        entries_va.append(entry)
+        for k in stats:
+            stats[k] += s[k]
+    out.flush()
+    stats['files'] = out.files
 
     with open(os.path.join(args.out, 'recomp_funcs.h'), 'w', newline='\n') as f:
-        f.write('/* POD Gold - AUTO-GENERATED by run_lift.py */\n#pragma once\n#include <stdint.h>\n\n')
-        for a, n in entries:
+        f.write('/* PODMMX.EXE + IR41_32.DLL - AUTO-GENERATED by run_lift.py */\n#pragma once\n'
+                '#include <stdint.h>\n\n')
+        for a, n in out.entries:
             f.write('void %s(void);\n' % n)
     with open(os.path.join(args.out, 'recomp_dispatch.c'), 'w', newline='\n') as f:
-        f.write('/* POD Gold - AUTO-GENERATED by run_lift.py */\n'
+        f.write('/* PODMMX.EXE + IR41_32.DLL - AUTO-GENERATED by run_lift.py */\n'
                 '#include "recomp_types.h"\n#include "recomp_funcs.h"\n\n'
                 'const recomp_dispatch_entry_t recomp_dispatch_table[] = {\n')
-        for a, n in sorted(entries):
+        for a, n in sorted(out.entries):
             f.write('    { 0x%08Xu, %s },\n' % (a, n))
         f.write('};\nconst uint32_t recomp_dispatch_count = %d;\n'
-                'const uint32_t pod_entry_va = 0x%08Xu;\n' % (len(entries), oep))
+                'const uint32_t pod_entry_va = 0x%08Xu;\n'
+                'const uint32_t pod_ir41_entry_va = 0x%08Xu;   /* the codec\'s DllMain */\n'
+                % (len(out.entries), entries_va[0], entries_va[1]))
 
-    stats['lines'] = sum(sum(1 for _ in open(os.path.join(args.out, fn), encoding='utf-8',
-                                             errors='replace'))
-                         for fn in os.listdir(args.out))
+    # A patch that found no instruction to follow is a fix that silently isn't there.
+    gen = ''.join(open(os.path.join(args.out, fn), encoding='utf-8', errors='replace').read()
+                  for fn in os.listdir(args.out) if fn.endswith('.c'))
+    for va, c in PATCHES.items():
+        if c not in gen:
+            sys.exit('patch at 0x%08X was not applied: is 0x%08X lifted?' % (va, va))
+
+    stats['lines'] = gen.count('\n')
     stats['changed'] = sync(args.out, final)
     json.dump(stats, open(STATS, 'w'), indent=1)
     print('=' * 60)

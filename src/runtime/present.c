@@ -425,16 +425,16 @@ static HMENU make_menu(void) {
     }
     AppendMenuA(dm, MF_STRING, ID_DITHER + D_OFF, "&Off");
     AppendMenuA(dm, MF_STRING, ID_DITHER + D_16BIT, "&16-bit (High Color desktop)");
-    AppendMenuA(dm, MF_STRING, ID_DITHER + D_8BIT, "&8-bit (216-colour web palette)");
+    AppendMenuA(dm, MF_STRING, ID_DITHER + D_8BIT, "&8-bit (216-color web palette)");
     AppendMenuA(v, MF_POPUP, (UINT_PTR)f, "&Filter");
     AppendMenuA(v, MF_POPUP, (UINT_PTR)s, "Window &size");
     AppendMenuA(v, MF_STRING, ID_FULL, "F&ullscreen\tF11");
     AppendMenuA(v, MF_SEPARATOR, 0, NULL);
     AppendMenuA(v, MF_STRING, ID_CRT, "&CRT (scanlines, mask)");
     AppendMenuA(v, MF_STRING, ID_CURVE, "CRT c&urvature");
-    AppendMenuA(v, MF_STRING, ID_GLOW, "&Glow (bright colours bloom)");
+    AppendMenuA(v, MF_STRING, ID_GLOW, "&Glow (bright colors bloom)");
     AppendMenuA(v, MF_POPUP, (UINT_PTR)dm, "&Dithering");
-    AppendMenuA(v, MF_STRING, ID_VIVID, "&Vivid colour");
+    AppendMenuA(v, MF_STRING, ID_VIVID, "&Vivid color");
     AppendMenuA(v, MF_SEPARATOR, 0, NULL);
     AppendMenuA(v, MF_STRING, ID_PAUSE_BG, "&Pause when in the background");
     AppendMenuA(bar, MF_POPUP, (UINT_PTR)v, "&Video");

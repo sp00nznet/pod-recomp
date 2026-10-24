@@ -4,11 +4,11 @@
 Two fixed corpora, one pass/fail count each, compared against the committed
 baseline in conformance.json; a regression fails the run:
 
-* **Milestones**: one headless run of the host with no input, 120 seconds.
-  POD's menu starts a race on its own after a few seconds (attract mode), so
-  the run covers the menu, the race and the return to the menu without a
-  script; after the race it tries a video (Indeo, which the host refuses: no
-  decoder) and starts another, four-way split-screen race. Scored by the lines the host prints and by the recording.
+* **Milestones**: two headless runs of the host with no input (RUNS below),
+  scored by the lines the host prints and by the recordings. 20 seconds of
+  the intro, played through the lifted Indeo codec; and 120 seconds with the
+  videos off, in which POD's menu starts a race on its own (attract mode),
+  returns to the menu, and starts a four-way split-screen race.
 * **Lift health**: from the generated tree. Lift errors, bodies with no
   terminator, and RECOMP_ITAIL labels that cannot resolve at run time (their
   target is not in the dispatch table).
@@ -32,8 +32,7 @@ import sys
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 GEN = os.path.join(ROOT, 'src', 'recomp', 'gen')
 BASELINE = os.path.join(ROOT, 'conformance.json')
-VIDEO = os.path.join(ROOT, 'work', 'conformance.mp4')
-SECONDS = 120
+VIDEO = os.path.join(ROOT, 'work', 'conformance.mp4')     # the run being scored
 
 
 def host():
@@ -45,7 +44,7 @@ def host():
 
 
 def frame(t, crop=None):
-    """The recording at t seconds, 64x48 grey, as bytes (empty if none)."""
+    """The recording at t seconds, 64x48 gray, as bytes (empty if none)."""
     vf = ('crop=%d:%d:%d:%d,' % crop if crop else '') + 'scale=64:48'
     return subprocess.run(['ffmpeg', '-loglevel', 'error', '-ss', str(t), '-i', VIDEO, '-frames:v', '1',
                            '-vf', vf, '-f', 'rawvideo', '-pix_fmt', 'gray', '-'],
@@ -57,9 +56,9 @@ def lit(t):
     return bool(f) and sum(f) / len(f) > 8
 
 
-def differ(a, b):
-    """Did a quarter of the picture change between a and b seconds?"""
-    fa, fb = frame(a), frame(b)
+def differ(a, b, crop=None):
+    """Did a quarter of the picture (or of crop) change between a and b seconds?"""
+    fa, fb = frame(a, crop), frame(b, crop)
     return bool(fa) and len(fa) == len(fb) and sum(abs(x - y) > 16 for x, y in zip(fa, fb)) > len(fa) // 4
 
 
@@ -68,41 +67,65 @@ def same(a, b):
     return bool(fa) and len(fa) == len(fb) and sum(abs(x - y) > 16 for x, y in zip(fa, fb)) < len(fa) // 50
 
 
+def video(t):
+    """The intro's 320x208 picture, in the middle of the screen, has detail."""
+    f = frame(t, (320, 208, 160, 136))
+    return bool(f) and statistics.pstdev(f) > 12
+
+
 def world(t):
     """The middle of the screen, away from the HUD, has detail: the track is
     drawn. Before the 2026 relift every polygon covered the screen and the
-    world was one flat colour behind a working HUD."""
+    world was one flat color behind a working HUD."""
     f = frame(t, (320, 200, 160, 120))
     return bool(f) and statistics.pstdev(f) > 20
 
 
-# (name, test). Times are seconds into the run: the menu is up by 10, the
-# attract race runs from about 20 to 48, the menu is back by 50, a video is
+# Two runs, no input. The intro is four minutes long, and skipping it with a
+# key leaves the menu dead (ROADMAP.md), so one short run watches it play
+# through the lifted codec, and the attract run goes without videos
+# (--no-codec: POD then shows its "install Indeo" still and goes straight on).
+#
+# (name, test). Times are seconds into each run. Attract run: the menu is up
+# by 10, the race runs from about 20 to 48, the menu is back by 50, a video is
 # refused around 60 and the second, split-screen race runs from about 90.
-MILESTONES = [
-    ('image mapped and imports bound', lambda out: re.search(r'mapped PODMMX\.EXE', out)),
-    ('the game folder is the CD', lambda out: re.search(r'\[cd\] \w:\\ is the game folder', out)),
-    ('DirectDraw created', lambda out: 'DirectDrawCreate -> host DirectDraw' in out),
-    ('past the CD and sound checks (100 frames)', lambda out: 'frame 100 presented' in out),
-    ('main menu drawn', lambda out: lit(14)),
-    ('attract race starts by itself', lambda out: differ(14, 30)),
-    ('the 3D world is drawn', lambda out: world(30) and world(40)),
-    ('the race moves', lambda out: differ(30, 40)),
-    ('back to the main menu', lambda out: same(14, 56)),
-    ('a second attract race after the video', lambda out: world(100) and differ(56, 100)),
-    ('no fault', lambda out: '=== fault' not in out),
+RUNS = [
+    ('intro', [], 20, os.path.join(ROOT, 'work', 'conformance_intro.mp4'), [
+        ('the codec starts (Indeo 4.1, lifted)', lambda out: '[indeo] Indeo 4.1 lifted' in out),
+        ('the intro video plays', lambda out: video(8) and video(14) and differ(8, 14, (320, 208, 160, 136))),
+        ('no fault (intro)', lambda out: '=== fault' not in out),
+    ]),
+    ('attract', ['--no-codec'], 120, os.path.join(ROOT, 'work', 'conformance.mp4'), [
+        ('image mapped and imports bound', lambda out: re.search(r'mapped PODMMX\.EXE', out)),
+        ('the game folder is the CD', lambda out: re.search(r'\[cd\] \w:\\ is the game folder', out)),
+        ('DirectDraw created', lambda out: 'DirectDrawCreate -> host DirectDraw' in out),
+        ('past the CD and sound checks (100 frames)', lambda out: 'frame 100 presented' in out),
+        ('main menu drawn', lambda out: lit(14)),
+        ('attract race starts by itself', lambda out: differ(14, 30)),
+        ('the 3D world is drawn', lambda out: world(30) and world(40)),
+        ('the race moves', lambda out: differ(30, 40)),
+        ('back to the main menu', lambda out: same(14, 56)),
+        ('a second attract race after the video', lambda out: world(100) and differ(56, 100)),
+        ('no fault', lambda out: '=== fault' not in out),
+    ]),
 ]
+MILESTONES = [m for r in RUNS for m in r[4]]
 
 
 def run(exe):
-    cmd = [exe, '--run', '--headless', '--watchdog', str(SECONDS), '--record', VIDEO]
-    try:
-        p = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True, errors='replace', timeout=SECONDS + 60)
-        out = p.stdout + p.stderr
-    except subprocess.TimeoutExpired as e:
-        out = (e.stdout or b'').decode(errors='replace') + (e.stderr or b'').decode(errors='replace')
-    passed = [name for name, test in MILESTONES if test(out)]
-    last = [l for l in out.splitlines() if l.startswith(('===', '  in lifted'))]
+    global VIDEO
+    passed, last = [], []
+    for _, args, seconds, path, milestones in RUNS:
+        VIDEO = path
+        cmd = [exe, '--run', '--headless', '--watchdog', str(seconds), '--record', VIDEO] + args
+        try:
+            p = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True, errors='replace',
+                               timeout=seconds + 60)
+            out = p.stdout + p.stderr
+        except subprocess.TimeoutExpired as e:
+            out = (e.stdout or b'').decode(errors='replace') + (e.stderr or b'').decode(errors='replace')
+        passed += [name for name, test in milestones if test(out)]
+        last += [l for l in out.splitlines() if l.startswith(('===', '  in lifted'))]
     return passed, last[:3]
 
 

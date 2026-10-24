@@ -3,6 +3,22 @@
 How POD Gold got from a lifted binary to a running game, and the traps on the
 way. Newest first. [architecture.md](architecture.md) has how the parts fit.
 
+## The videos (October 2026)
+
+The intro and the other videos play through the disc's own Indeo 4.1 codec, lifted with
+the game; [movies.md](movies.md) has how, how it is checked, and what is not working yet.
+Two things found on the way that are not about video:
+
+- **A game controller drove the menus.** With a controller plugged into the machine,
+  a headless run went from the menu into One Player, a car select, all on its own. POD
+  polls WINMM's joystick 0 (`joyGetPosEx`, 16,000 times in 15 s); headless, the host now
+  says there is none.
+- **A spin was not a starved lock.** After a skipped video the game thread loops and the
+  sound thread's stack shows `mach_enter`, which looked like native32's machine lock
+  starving it. The watchdog's lock owner said otherwise: the sound thread sat idle in
+  `GetMessage`, and the `mach_enter` frames were old stack contents. Stack-scanned host
+  frames are hints, not a call stack.
+
 ## The relift (October 2026): the track draws
 
 The project moved onto the current pcrecomp pipeline: pcrecomp's disasm32
@@ -89,7 +105,7 @@ immediate (six of them, five of which IDA also lists) and runs disasm32 again.
 
 ### The CD: a drive letter, a label, and no audio tracks
 
-POD walks the drive letters for a CD-ROM labelled `POD`, `POD_POD_POD` or
+POD walks the drive letters for a CD-ROM labeled `POD`, `POD_POD_POD` or
 `POD2_0`, and asks for the disc otherwise. The host maps the game folder to a
 free letter (`DefineDosDevice`, no admin) and answers `GetDriveTypeA` and
 `GetVolumeInformationA` for it.
@@ -222,10 +238,10 @@ priority) — i.e. the C runtime is genuinely coming up.
 
 The earlier derail around `0x004CB3xx` (registers holding code addresses; an
 indirect call reading code bytes as a pointer, `ITAIL: unresolved 0x004CB4DC` …)
-was a **direct jump whose target lands inside a *neighbouring* IDA function.** The
+was a **direct jump whose target lands inside a *neighboring* IDA function.** The
 lifter can only `goto` a label in the *same* C function, so for an out-of-function
 target it emits `L_X: RECOMP_ITAIL(0xXu)` — a global tail-call. That misses the
-dispatch table whenever `X` isn't a catalogued entry (a switch arm / mid-function
+dispatch table whenever `X` isn't a cataloged entry (a switch arm / mid-function
 landing), so the jump is silently dropped and control flow is lost.
 
 **Fix — close the control-flow target set** (`tools/seed_call_targets.py`): scan
@@ -294,7 +310,7 @@ resolves (via `pod_com_lookup`) to the matching host method shim — each runnin
 the recomp stack model (`this=ARG(0)`, args `ARG(1..)`, `RET(hr)`, `STDRET(slots)`).
 
 Implemented `IDirectDraw` (23 methods), `IDirectDrawSurface` (36), and a minimal
-`IDirectDrawPalette` (7). The real-behaviour ones: `SetDisplayMode` opens/sizes the
+`IDirectDrawPalette` (7). The real-behavior ones: `SetDisplayMode` opens/sizes the
 window; `CreateSurface` builds a primary (+ optional attached back buffer) and an
 offscreen surface with a 16bpp guest pixel buffer; `Lock` hands back that buffer's
 VA in the `DDSURFACEDESC` (565 pixel format) so the MMX rasterizer renders straight
@@ -329,7 +345,7 @@ A run of fixes took POD all the way through its real startup to the game loop:
 - **`VirtualQuery`**: a real implementation over the arena (the stub returned 0, so
   the CRT's memory-scan loop never advanced — an infinite spin in `sub_4A8560`).
 - **Function-pointer closure** (`tools/seed_fptr_targets.py`): IDA leaves ~771 code
-  addresses uncatalogued because they're reached only through pointers (handler
+  addresses uncataloged because they're reached only through pointers (handler
   tables). Added them as entries so indirect calls resolve. Out-of-range
   misdisassembly artifacts get empty stubs (`recomp_stubs.c`).
 - **DirectInput COM shim** (in `ddraw_shim.c`): fake `IDirectInput` (8 methods) +
@@ -352,7 +368,7 @@ thread (`src/runtime/thread_shim.c`):
 - **`CreateThread`** allocates a guest stack + TIB, then `_beginthreadex`s a launcher
   that sets that thread's `esp`/FPU/`fs_base`, pushes the thread argument, and calls
   the lifted thread proc through the dispatch table. `CREATE_SUSPENDED`/`ResumeThread`
-  honoured.
+  honored.
 - **Real synchronization.** Events, mutexes, semaphores, and `MsgWait`/`WaitFor*`
   map to real Win32 objects (a guest-handle table); critical sections map guest
   `CRITICAL_SECTION` pointers to host ones. The shim heap is lock-guarded.
@@ -487,8 +503,8 @@ POD's fixed-point 3D helpers are hand-written x87 that uses the whole stack:
 every one of those computing on st(1), the cross product came out with a z
 component too large for `fistp`, which stored x87's *integer indefinite*
 `0x80000000`. That poisoned the squared-length helper, which made
-`sub_00423BC0`'s normalise divide by `0x80000000` and turn a clean `(0, 0, 1.0)`
-into `(0, 0, 0)`, which reached the camera basis, which failed to normalise, which
+`sub_00423BC0`'s normalize divide by `0x80000000` and turn a clean `(0, 0, 1.0)`
+into `(0, 0, 0)`, which reached the camera basis, which failed to normalize, which
 tripped POD's own `("3D","NORM")` check and called `exit(-1)`.
 
 One wrong register index, six layers down.
@@ -520,7 +536,7 @@ The HUD, sprites and text render; the track does not. What is established:
 - Primitives *are* dispatched and drawn — the type nibble at `[obj+0xA]>>16` comes
   through as 0x14 and 0x64, both of which the dispatcher handles.
 - But the spans describe the whole viewport: `y 0..479, x ..639`. Every primitive
-  covers the screen, so the last one wins and the world is one flat colour.
+  covers the screen, so the last one wins and the world is one flat color.
 - The camera basis is healthy — three orthonormal unit vectors tracking the car.
 - The MMX helpers are not the problem: `runtime/recomp32/mmx_selftest.c` in
   pcrecomp checks all of them against hand-worked values and passes.
@@ -539,18 +555,18 @@ then hits its own sanity check.
 
 The chain, traced end to end:
 
-1. `sub_004247F8` builds a face normal — two edge vectors, each normalised, then
+1. `sub_004247F8` builds a face normal — two edge vectors, each normalized, then
    crossed. It writes one whose z is **`0x80000000`**. That is x87's *integer
    indefinite*: an earlier `fistp` was handed a value too big for 32 bits. Sampled
    triangles have perfectly sane 16.16 vertices (`FF03D6DA FEFA15B8 0000DD18`), so
    only some inputs blow up.
 2. `sub_004D502D` (squared length) is then handed that vector, takes its
    large-magnitude path and returns `0x80000000`.
-3. `sub_00423BC0` (normalise, with a unit-axis fallback when the length is zero)
+3. `sub_00423BC0` (normalize, with a unit-axis fallback when the length is zero)
    sees a *non-zero* length, so it divides — and every component of a small vector
    divided by `0x80000000` rounds to zero. A clean `(0, 0, 1.0)` becomes `(0, 0, 0)`.
 4. That zero reaches the camera basis. `sub_0041DE6C` differences two points through
-   it, `sub_00423E2C` cannot normalise the result, and POD calls its own error
+   it, `sub_00423E2C` cannot normalize the result, and POD calls its own error
    reporter `sub_00492FAC("3D", "NORM")` — which `SendMessage`s the message to the
    WndProc and then `exit(-1)`s. The process parks in that modal path with the
    loading screen frozen on screen.
@@ -617,7 +633,7 @@ diagnostics.
 - **`POD_RET_PRINT`** with `POD_DUMP_AFTER=<va>` prints a function's return value —
   the only way to see what a lifted leaf actually computed.
 - `tools/seed_icall_targets.py` feeds a run's `ICALL: unresolved` reports back into
-  the function catalogue: a function referenced only by a pointer in a table is
+  the function catalog: a function referenced only by a pointer in a table is
   invisible to IDA and to the literal scan, but the runtime names it.
 - A watchdog in `recomp_lookup_import` dumps the trace and exits after 64 repeated
   unresolved indirect calls (a wild-pointer loop), instead of spinning forever.

@@ -6,14 +6,23 @@ versions follow [SemVer](https://semver.org/). No version has been tagged yet.
 ## [Unreleased]
 
 ### Added
+- The videos play: the intro, the logo, the credits and the ending are Indeo 4.1, which
+  Windows no longer decodes, so the codec on the disc (`INSTALL\IR41_32.DLL`, R4.11.15.91,
+  the MMX build) is lifted with the game and installed with Video for Windows for this
+  process. `tools/verify_indeo.py`: byte-identical to the original codec on all six videos,
+  13,722 frames. The method is Twisted Metal's recomp's (docs/movies.md).
+- `--decode-test`, `--codec-native` and `--no-codec`; `POD_INDEO_TRACE` and `POD_MCI_TRACE`.
+- Stills and videos drawn with DrawDib reach the recording and the window.
+- `tools/addr2name.py` and a linker map (`pod.map`) to name a host address in a report.
 - The 3D world draws: the attract-mode race on Downtown renders the track, the cars and
   the HUD, and the game returns to its menu afterwards (docs/bringup.md, "The relift").
 - `Setup.cmd` (`tools/setup.ps1`): one double-click from a downloaded folder to a
   shortcut, from the CD, `POD2_0.BIN` or an ISO.
 - A headless mode that never touches a screen: `--headless`, `--record out.mp4`,
   `--frames`, `--shot`, and scripted keys with `--key NAME@MS[+HOLD]`.
-- `tools/conformance.py` and `conformance.json`: eleven milestones from a 120-second
-  headless run plus lift health, failing on any drop. 11/11.
+- `tools/conformance.py` and `conformance.json`: fourteen milestones from two headless
+  runs (20 s of the intro, 120 s of attract mode) plus lift health, failing on any drop.
+  14/14.
 - `--original`: the shipping machine code under the same host, for comparison.
 - `tools/catalog.py`: the function catalog from pcrecomp's disasm32, seeded with the code
   addresses the program uses as immediates.
@@ -32,6 +41,9 @@ versions follow [SemVer](https://semver.org/). No version has been tagged yet.
 - `LICENSE` is plain MIT; the scope note is in the README's License section.
 
 ### Fixed
+- A game controller plugged into the machine drove headless runs: POD polls WINMM's
+  joystick 0, and it walked the menus into a car select by itself. Headless, there is no
+  joystick now.
 - The game quit at start on any CPU newer than about 2004: CPUID answers as a Pentium MMX.
 - Its intro thread and window procedure ran the original machine code instead of the
   lift (pcrecomp#128).
