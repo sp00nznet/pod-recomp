@@ -5,6 +5,13 @@ versions follow [SemVer](https://semver.org/). No version has been tagged yet.
 
 ## [Unreleased]
 
+### Fixed
+- Skipping a video by key, and Esc on the main menu, no longer freeze the menu. POD reads
+  the keyboard as buffered DirectInput events and does not check the result: headless the
+  read fails, and POD applied 20 entries of stack garbage to its key table, among them a
+  key held down for good, so the menu waited forever for all keys to be released. A failed
+  read now returns no events, and scripted keys arrive as events (docs/movies.md).
+
 ### Added
 - The videos play: the intro, the logo, the credits and the ending are Indeo 4.1, which
   Windows no longer decodes, so the codec on the disc (`INSTALL\IR41_32.DLL`, R4.11.15.91,
@@ -20,10 +27,11 @@ versions follow [SemVer](https://semver.org/). No version has been tagged yet.
   shortcut, from the CD, `POD2_0.BIN` or an ISO.
 - A headless mode that never touches a screen: `--headless`, `--record out.mp4`,
   `--frames`, `--shot`, and scripted keys with `--key NAME@MS[+HOLD]`.
-- `tools/conformance.py` and `conformance.json`: thirteen milestones from two headless
-  runs (20 s of the intro, 120 s of attract mode) plus lift health, failing on any drop.
-  The attract events (menu, race, menu, second race) are found in order in the recording,
-  not at fixed times, since their timing moves by seconds between builds. 13/13.
+- `tools/conformance.py` and `conformance.json`: sixteen milestones from three headless
+  runs (20 s of the intro; 18 s of keys, skipping the intro and driving the menu to a track
+  select; 120 s of attract mode) plus lift health, failing on any drop. The attract events
+  (menu, race, menu, second race) are found in order in the recording, not at fixed times,
+  since their timing moves by seconds between builds. 16/16.
 - `--original`: the shipping machine code under the same host, for comparison.
 - `tools/catalog.py`: the function catalog from pcrecomp's disasm32, seeded with the code
   addresses the program uses as immediates.

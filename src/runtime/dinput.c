@@ -1,22 +1,33 @@
 /*
  * The keyboard: Windows' own DirectInput, with one seam.
  *
- * POD polls the keyboard with IDirectInputDevice::GetDeviceState (DirectX 3,
- * a 256-byte array indexed by DIK_ scan code). The device is the real one,
- * but its vtable's Acquire and GetDeviceState are replaced (each vtable once,
- * like ddraw.c's):
+ * POD reads the keyboard as buffered DirectInput data (DirectX 3): it hands
+ * the keyboard an event with SetEventNotification, its message loop waits on
+ * it, and on each signal it calls GetDeviceData for up to 20 key events
+ * (DIDEVICEOBJECTDATA, indexed by DIK_ scan code) and applies them to its own
+ * key table. The device is the real one, but its vtable's Acquire,
+ * GetDeviceState, GetDeviceData and SetEventNotification are replaced (each
+ * vtable once, like ddraw.c's):
  *   - headless, a cloaked window is never the foreground one, so a
- *     DISCL_FOREGROUND keyboard can never be acquired and every poll fails.
- *     Acquire always succeeds, and a poll that fails reads as no keys down;
- *   - scripted keys (--key, host.c) are ORed into a keyboard poll, by scan
- *     code, so a headless run can drive the menus and the car.
+ *     DISCL_FOREGROUND keyboard can never be acquired and every read fails.
+ *     Acquire always succeeds, and a read that fails reads as no keys;
+ *   - POD does not check GetDeviceData's result. A failed call leaves the
+ *     count as POD passed it (20), and POD applied 20 entries of stack
+ *     garbage to its key table: a key "down" with no "up", and every menu
+ *     that waits for all keys to be released waited for good. A failed read
+ *     now returns no events;
+ *   - scripted keys (--key, host.c) arrive as buffered events, down and up,
+ *     after any real ones, and are ORed into a GetDeviceState poll.
  * Everything else, including the mouse and joysticks, is DirectInput's.
+ *
+ * POD_DI_TRACE=1 logs each keyboard read.
  */
 #define WIN32_LEAN_AND_MEAN
 #define DIRECTINPUT_VERSION 0x0300
 #include <windows.h>
 #include <dinput.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "dinput_host.h"
@@ -24,25 +35,59 @@
 #define ARG(n) MEM32(g_esp + 4 + 4 * (n))
 #define RET(v, nargs) do { g_eax = (uint32_t)(v); g_esp += 4 + 4 * (nargs); } while (0)
 
-enum { DI_CREATEDEVICE = 3, DEV_ACQUIRE = 7, DEV_GETDEVICESTATE = 9, DEV_SETEVENTNOTIFICATION = 12 };
+enum { DI_CREATEDEVICE = 3, DEV_ACQUIRE = 7, DEV_GETDEVICESTATE = 9, DEV_GETDEVICEDATA = 10,
+       DEV_SETEVENTNOTIFICATION = 12 };
 
-static int g_headless;
 typedef HRESULT (WINAPI *create_device_t)(void*, REFGUID, void**, void*);
 typedef HRESULT (WINAPI *acquire_t)(void*);
 typedef HRESULT (WINAPI *get_state_t)(void*, DWORD, void*);
+typedef HRESULT (WINAPI *get_data_t)(void*, DWORD, DIDEVICEOBJECTDATA*, DWORD*, DWORD);
+typedef HRESULT (WINAPI *set_event_t)(void*, HANDLE);
 static create_device_t g_create_device;
 static acquire_t g_acquire;
 static get_state_t g_get_state;
-typedef HRESULT (WINAPI *set_event_t)(void*, HANDLE);
+static get_data_t g_get_data;
 static set_event_t g_set_event;
+
+static int g_headless, g_trace;
 static HANDLE g_kbd_event;
 
-void dih_init(int headless) { g_headless = headless; }
+/* Scripted key events waiting for the next GetDeviceData. */
+#define QUEUE 64
+static struct { DWORD dik, data, time; } g_q[QUEUE];
+static int g_qn;
+static DWORD g_seq;
+static CRITICAL_SECTION g_qlock;
 
-/* POD reads the keyboard only when DirectInput signals the event it handed
- * to SetEventNotification ("DInputKeyboard"): its message loop waits on it.
- * A cloaked window never gets a real key, so a scripted one signals it. */
-void dih_key_changed(void) { if (g_kbd_event) SetEvent(g_kbd_event); }
+void dih_init(int headless) {
+    g_headless = headless;
+    g_trace = getenv("POD_DI_TRACE") != NULL;
+    InitializeCriticalSection(&g_qlock);
+}
+
+static UINT dik_of(int vk) {
+    UINT sc = MapVirtualKeyA(vk, MAPVK_VK_TO_VSC);
+    /* The arrows are extended keys: DIK_UP is 0xC8, not the keypad's 0x48. */
+    if (vk == VK_UP || vk == VK_DOWN || vk == VK_LEFT || vk == VK_RIGHT) sc |= 0x80;
+    return sc < 256 ? sc : 0;
+}
+
+/* A --key went down or up: queue the event and wake the game's keyboard read
+ * (a cloaked window never gets a real key, so nothing else would). */
+void dih_key(int vk, int down) {
+    UINT dik = dik_of(vk);
+    if (!dik) return;
+    EnterCriticalSection(&g_qlock);
+    if (g_qn < QUEUE) {
+        g_q[g_qn].dik = dik;
+        g_q[g_qn].data = down ? 0x80 : 0;
+        g_q[g_qn].time = GetTickCount();
+        g_qn++;
+    }
+    LeaveCriticalSection(&g_qlock);
+    if (g_trace) fprintf(stderr, "[dinput] key 0x%02X %s, event %p\n", dik, down ? "down" : "up", g_kbd_event);
+    if (g_kbd_event) SetEvent(g_kbd_event);
+}
 
 static HRESULT WINAPI my_set_event(void* dev, HANDLE e) {
     if (e) g_kbd_event = e;
@@ -69,13 +114,41 @@ static HRESULT WINAPI my_get_state(void* dev, DWORD size, void* data) {
     if (size != 256) return r;                   /* not the keyboard */
     if (FAILED(r)) memset(data, 0, size);
     for (int vk = 1; vk < 256; vk++) {
-        if (!host_key_held(vk)) continue;
-        UINT sc = MapVirtualKeyA(vk, MAPVK_VK_TO_VSC);
-        /* The arrows are extended keys: DIK_UP is 0xC8, not the keypad's 0x48. */
-        if (vk == VK_UP || vk == VK_DOWN || vk == VK_LEFT || vk == VK_RIGHT) sc |= 0x80;
-        if (sc && sc < 256) ((BYTE*)data)[sc] = 0x80;
+        UINT dik = host_key_held(vk) ? dik_of(vk) : 0;
+        if (dik) ((BYTE*)data)[dik] = 0x80;
     }
     return DI_OK;
+}
+
+/* GetDeviceData(size, events, &count, flags): the real events, then the
+ * scripted ones, and never a count the call did not fill. With no buffer
+ * (a flush) the scripted queue is dropped too. */
+static HRESULT WINAPI my_get_data(void* dev, DWORD size, DIDEVICEOBJECTDATA* od, DWORD* n, DWORD flags) {
+    DWORD want = n ? *n : 0, got = 0;
+    HRESULT r = g_headless ? DIERR_NOTACQUIRED : g_get_data(dev, size, od, n, flags);
+    if (SUCCEEDED(r) && n) got = *n;
+    EnterCriticalSection(&g_qlock);
+    int used = 0;
+    if (!od) used = g_qn;
+    else if (size >= sizeof(DIDEVICEOBJECTDATA))
+        for (; used < g_qn && got < want; used++, got++) {
+            DIDEVICEOBJECTDATA* e = (DIDEVICEOBJECTDATA*)((BYTE*)od + got * size);
+            memset(e, 0, size);
+            e->dwOfs = g_q[used].dik;
+            e->dwData = g_q[used].data;
+            e->dwTimeStamp = g_q[used].time;
+            e->dwSequence = ++g_seq;
+        }
+    if (used && !(flags & DIGDD_PEEK)) {
+        memmove(g_q, g_q + used, (g_qn - used) * sizeof g_q[0]);
+        g_qn -= used;
+    }
+    LeaveCriticalSection(&g_qlock);
+    if (n) *n = got;
+    if (g_trace)
+        fprintf(stderr, "[dinput] GetDeviceData(%lu wanted) -> %lu events, real 0x%08lX\n",
+                want, got, (unsigned long)r);
+    return FAILED(r) && (g_headless || got) ? DI_OK : r;
 }
 
 static HRESULT WINAPI my_create_device(void* di, REFGUID guid, void** out, void* outer) {
@@ -83,6 +156,7 @@ static HRESULT WINAPI my_create_device(void* di, REFGUID guid, void** out, void*
     if (SUCCEEDED(r) && *out && IsEqualGUID(guid, &GUID_SysKeyboard)) {
         patch(*out, DEV_ACQUIRE, (void*)my_acquire, (void**)&g_acquire);
         patch(*out, DEV_GETDEVICESTATE, (void*)my_get_state, (void**)&g_get_state);
+        patch(*out, DEV_GETDEVICEDATA, (void*)my_get_data, (void**)&g_get_data);
         patch(*out, DEV_SETEVENTNOTIFICATION, (void*)my_set_event, (void**)&g_set_event);
     }
     return r;

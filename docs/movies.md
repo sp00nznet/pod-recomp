@@ -71,23 +71,36 @@ to RGB its own way, so it is compared as a correlation: the same picture, not th
 bytes. None of FFmpeg's code is in this project; it runs as a separate program.
 
 The conformance run (`tools/conformance.py`) watches the intro play for 20 seconds
-through the lifted codec. Its attract run uses `--no-codec`, because the intro is four
-minutes long and skipping it by key is broken (below).
+through the lifted codec, and in a second run skips it with Esc and drives the menu.
+Its attract run uses `--no-codec`, because the intro is four minutes long.
 
-## Not working yet
+## Skipping a video
 
-**Skipping a video with a key leaves the menu dead.** Esc, Space or Enter during the
-intro stops it and the main menu appears, but POD never flips again: it keeps calling
-`DrawDibDraw` about 2,000 times a second from its video code, and the menu takes no
-keys. The original machine code does exactly the same under this host
-(`--original` with `--codec-native`), so the difference is in the host or in Windows,
-not in the lift. When the intro plays to its end, the menu, the attract races and the
-keys all work. Leads: the video loop (`sub_0046094C`) paces itself by the sound clock
-and polls the keyboard (`sub_0049CC24`) and joystick (`sub_004801F4`); on the skip
-path `waveOutClose` fails with buffers still queued. ROADMAP.md.
+Until October 2026, Esc, Space or Enter during the intro stopped it, the main menu
+appeared, and then nothing: no flips, no keys. Esc on the main menu froze it the same
+way, and the original machine code did the same under this host. It was not the video.
 
-Esc on the main menu, with no video involved, freezes it the same way; Space or Enter
-there does not.
+POD reads the keyboard as buffered DirectInput data. It hands the keyboard an event
+(`SetEventNotification`), its message loop wakes on it, and it asks `GetDeviceData`
+for up to 20 key events, which it applies to its key table (`0x661968`, by DIK code).
+It does not look at the result. Headless, the cloaked window is never in the
+foreground, the keyboard is never acquired, and the call fails with
+`DIERR_NOTACQUIRED`, leaving the count at 20: POD applied 20 entries of stack garbage.
+Among them was the down arrow, pressed and never released. That moved the menu to
+QUIT, and the menu's next step, `sub_0049DF34`, waits until every key is released
+before it goes on. It waited for good, polling the keys, and never drew again.
+
+A scripted key was the first thing to signal that event, so a run with no keys never
+read the keyboard and never met the garbage. `dinput.c` now returns no events from a
+failed read, and delivers scripted keys (`--key`) as buffered events, a down and an up,
+which is how POD reads them.
+
+The wrong turns, for the next spin like it: the loop calls `timeGetTime` millions of
+times, which looked like the video's sound clock; the log showed `DrawDibDraw` 2,000
+times a second, which was the intro itself before the skip (the `[input]` line is
+written late); and stack-scanned host frames named the video player. What found it was
+a call trace of the stuck thread (`--calltrace` in the trace build): only the key poll
+ran, then the loop that called it, then the key table.
 
 ## Host flags for this
 

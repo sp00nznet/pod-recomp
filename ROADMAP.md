@@ -2,15 +2,11 @@
 
 ## Next
 
-- **A race of your own.** Drive One Player → a track → a car → the race with `--key`, and
-  add it to the conformance run as milestones.
+- **A race of your own.** The conformance run drives One Player to the track select with
+  `--key`; go on through a car to the race, and score the race.
 - **CD music.** The host's `cdaudio` is silent. The music is track 2 of the user's
   `POD2_0.BIN` (raw 2352-byte audio sectors after the data track): play it through
   `waveOut` when the game asks MCI to play, and loop it as the CD did.
-- **Skipping a video by key.** Esc, Space or Enter during the intro stops it, but the menu
-  after it never flips and takes no keys, in the original code under this host too; Esc on
-  the main menu does the same. Until then a player has to let the intro play out, and the
-  conformance run cannot drive a race of its own. Leads are in docs/movies.md.
 - **Windowed play checked on a real screen**, through offstage: focus, the real keyboard,
   the presenter's scaling, and the mouse cursor POD clips.
 - **A clean-machine run of Setup.cmd** on a netlab test VM with a disc image.

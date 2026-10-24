@@ -115,11 +115,11 @@ static DWORD WINAPI input_thread(LPVOID p) {
     LPARAM sc = (LPARAM)MapVirtualKeyA(vk, MAPVK_VK_TO_VSC) << 16;
     fprintf(stderr, "[input] key 0x%02X down at %lu ms\n", vk, GetTickCount() - t0);
     InterlockedIncrement(&g_held[vk]);
-    dih_key_changed();
+    dih_key(vk, 1);
     PostMessageA(w, WM_KEYDOWN, vk, sc | 1);
     Sleep(g_in[i].hold);
     InterlockedDecrement(&g_held[vk]);
-    dih_key_changed();
+    dih_key(vk, 0);
     PostMessageA(w, WM_KEYUP, vk, sc | 0xC0000001u);
     return 0;
 }

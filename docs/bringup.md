@@ -18,6 +18,9 @@ Two things found on the way that are not about video:
   starving it. The watchdog's lock owner said otherwise: the sound thread sat idle in
   `GetMessage`, and the `mach_enter` frames were old stack contents. Stack-scanned host
   frames are hints, not a call stack.
+- **The spin was a key held by garbage.** POD applies whatever a failed DirectInput
+  `GetDeviceData` leaves in its buffer; headless that was a down arrow never released,
+  and the menu waited for all keys up. [movies.md](movies.md), "Skipping a video".
 
 ## The relift (October 2026): the track draws
 

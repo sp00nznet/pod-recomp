@@ -79,7 +79,7 @@ What the host adds, in `src/runtime/`:
 | `host.c` | The command line, the guest's module and command line, the CD (a drive letter, the `POD2_0` label, a silent `cdaudio`), refusing videos with no decoder, `Ubi.ini` via `GetWindowsDirectoryA`, the 60 Hz message heartbeat, scripted keys, the watchdog and fault report |
 | `ddraw.c` | DirectDraw (v1 and v2) over memory surfaces: no mode change, no exclusive screen. A Flip is a present: to the window, to ffmpeg (`--record`), or nowhere (`--headless`) |
 | `present.c` | The window's picture when there is a screen: scaling, aspect, a Direct3D 11 presenter |
-| `dinput.c` | Windows' DirectInput with three slots replaced: Acquire, GetDeviceState (scripted keys) and SetEventNotification (to wake the game when one changes) |
+| `dinput.c` | Windows' DirectInput with four slots replaced: Acquire, GetDeviceData (POD's buffered key events: none from a failed read, and the scripted keys), GetDeviceState, and SetEventNotification (to wake the game when a scripted key changes) |
 | `indeo.c` | The videos' codec, IR41_32.DLL from the disc, lifted with the game, mapped at its own base and installed as a Video for Windows function driver ([movies.md](movies.md)) |
 | `oracle.c` | `--original`: the shipping machine code under the same host, for comparing |
 

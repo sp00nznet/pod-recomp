@@ -33,14 +33,14 @@ its `lift32` writes the C, and its `native32` runtime hosts it.
 |---|---|
 | Boot, CD check, config | ✅ |
 | Intro and videos | ✅ Indeo 4.1, **through the disc's own codec, lifted with the game**: byte-identical to Intel's code on all 13,722 frames ([docs/movies.md](docs/movies.md)) |
-| Skipping a video by key | ❌ the menu after it is dead; let the intro play out (4 min) |
+| Skipping a video by key | ✅ Esc, Space or Enter |
 | Main menu | ✅ drawn, takes keys (`--key`) |
 | Attract-mode races | ✅ Downtown, seven cars, **the 3D world drawn**, HUD, laps and standings; then a four-way split-screen race |
-| Your own race (One Player) | ⏳ not yet driven through by a script |
+| Your own race (One Player) | ⏳ menus driven by `--key` to the track select; the race itself not yet |
 | CD music | 🔇 the CD audio device answers but plays nothing |
 | Sound effects | ✅ through Windows' `waveOut` |
 | Windowed play on a screen | ⚠️ the window and presenter are in, but only headless runs have been checked |
-| Conformance | **13/13** milestones, 0 lift errors ([below](#conformance)) |
+| Conformance | **16/16** milestones, 0 lift errors ([below](#conformance)) |
 
 The track did not draw at all before October 2026; relifting on the current pcrecomp
 fixed it. How, and every other wall on the way, is in [docs/bringup.md](docs/bringup.md).
@@ -189,15 +189,16 @@ build\pod.exe --run --headless --key ENTER@12000 --key DOWN@14000+300
 
 With no input, POD plays its four-minute intro, then its menu starts a race by itself
 after a few seconds (attract mode): the menu, a race, the menu again, then a four-way
-split-screen race. Don't skip the intro with a key for now: the menu after a skipped
-video takes no input ([docs/movies.md](docs/movies.md)).
+split-screen race. Esc, Space or Enter skips a video.
 
 ## Conformance
 
-`py -3 tools\conformance.py` runs the host headless twice and scores thirteen milestones
-from its output and its recordings, plus lift health from the generated tree:
+`py -3 tools\conformance.py` runs the host headless three times and scores sixteen
+milestones from its output and its recordings, plus lift health from the generated tree:
 
 - 20 seconds of the intro: the lifted codec starts, the intro video plays, no fault.
+- 18 seconds of keys: Esc skips the intro to the menu, Enter opens One Player, Enter
+  again reaches the track select, no fault.
 - 120 seconds with videos off (`--no-codec`, since the intro alone is four minutes): image
   bound, the CD found, DirectDraw, past the CD and sound checks, the menu, an attract race
   with the 3D world drawn, the race moving, back to the menu, a second attract race,
@@ -209,7 +210,7 @@ It compares against [`conformance.json`](conformance.json) and fails on any drop
 `py -3 tools\verify_indeo.py` checks the codec on its own: every video on the disc
 decoded by the lift, by the codec's original machine code and by ffmpeg.
 
-**Current: 13/13 milestones; 11,865 functions lifted (game and codec), 0 errors, 3 unresolvable
+**Current: 16/16 milestones; 11,865 functions lifted (game and codec), 0 errors, 3 unresolvable
 tail labels. Codec: byte-identical to the original on 6 of 6 videos, 13,722 frames.**
 
 The corpus is your disc, which cannot be redistributed: without `game\`, a lift and a

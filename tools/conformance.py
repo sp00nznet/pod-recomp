@@ -118,12 +118,30 @@ def attract(r):
     return ev
 
 
-# Two runs, no input. The intro is four minutes long, and skipping it with a
-# key leaves the menu dead (ROADMAP.md), so one short run watches it play
-# through the lifted codec, and the attract run goes without videos
-# (--no-codec: POD then shows its "install Indeo" still and goes straight on).
-# In the attract run the menu is up by about 10 s, a race runs to about 48 s,
-# the menu returns, and a second (split-screen) race starts by about 75 s.
+def keys(r):
+    """The keys run, as seconds (None if not seen): Esc at 8 s skips the intro
+    to the menu, Enter at 11 s opens One Player, Enter at 14 s picks Single
+    Race and its track select. Each screen holds still until the next key."""
+    f = r.full
+    still = lambda lo, hi: next((t for t in range(lo, min(hi, len(f) - 1))
+                                 if sum(f[t]) / len(f[t]) > 8 and same(f[t], f[t + 1])), None)
+    ev = {'menu': still(9, 11)}
+    ev['one player'] = still(12, 14) if ev['menu'] is not None else None
+    ev['track select'] = still(15, 18) if ev['one player'] is not None else None
+    a, b, c = ev['menu'], ev['one player'], ev['track select']
+    if b is not None and not differ(f[a], f[b]):
+        ev['one player'] = ev['track select'] = None
+    elif c is not None and not (differ(f[b], f[c]) and differ(f[a], f[c])):
+        ev['track select'] = None
+    return ev
+
+
+# Three runs. The intro is four minutes long, so one short run watches it play
+# through the lifted codec, one skips it with Esc and drives the menu with
+# Enter, and the attract run, with no input, goes without videos (--no-codec:
+# POD then shows its "install Indeo" still and goes straight on). In the
+# attract run the menu is up by about 10 s, a race runs to about 48 s, the
+# menu returns, and a second (split-screen) race starts by about 75 s.
 #
 # (name, extra args, seconds, recording, milestones); a test takes the host's
 # output and the Recording.
@@ -132,6 +150,13 @@ RUNS = [
         ('the codec starts (Indeo 4.1, lifted)', lambda out, r: '[indeo] Indeo 4.1 lifted' in out),
         ('the intro video plays', lambda out, r: intro_plays(r)),
         ('no fault (intro)', lambda out, r: '=== fault' not in out),
+    ]),
+    ('keys', ['--key', 'ESC@8000', '--key', 'ENTER@11000', '--key', 'ENTER@14000'], 18,
+     os.path.join(ROOT, 'work', 'conformance_keys.mp4'), [
+        ('Esc skips the intro to the menu', lambda out, r: r.ev['menu'] is not None),
+        ('the menu takes keys: One Player, then a track select',
+         lambda out, r: r.ev['track select'] is not None),
+        ('no fault (keys)', lambda out, r: '=== fault' not in out),
     ]),
     ('attract', ['--no-codec'], 120, os.path.join(ROOT, 'work', 'conformance.mp4'), [
         ('image mapped and imports bound', lambda out, r: re.search(r'mapped PODMMX\.EXE', out)),
@@ -160,9 +185,9 @@ def run(exe):
         except subprocess.TimeoutExpired as e:
             out = (e.stdout or b'').decode(errors='replace') + (e.stderr or b'').decode(errors='replace')
         r = Recording(path)
-        r.ev = attract(r) if name == 'attract' else {}
+        r.ev = attract(r) if name == 'attract' else keys(r) if name == 'keys' else {}
         if r.ev:
-            print('attract events (s): ' + '  '.join('%s %s' % kv for kv in r.ev.items()))
+            print('%s events (s): %s' % (name, '  '.join('%s %s' % kv for kv in r.ev.items())))
         passed += [m for m, test in milestones if test(out, r)]
         last += [l for l in out.splitlines() if l.startswith(('===', '  in lifted'))]
     return passed, last[:3]
