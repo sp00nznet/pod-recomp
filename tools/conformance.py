@@ -32,7 +32,6 @@ import sys
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 GEN = os.path.join(ROOT, 'src', 'recomp', 'gen')
 BASELINE = os.path.join(ROOT, 'conformance.json')
-VIDEO = os.path.join(ROOT, 'work', 'conformance.mp4')     # the run being scored
 
 
 def host():
@@ -43,88 +42,128 @@ def host():
     return max(have, key=os.path.getmtime) if have else None
 
 
-def frame(t, crop=None):
-    """The recording at t seconds, 64x48 gray, as bytes (empty if none)."""
-    vf = ('crop=%d:%d:%d:%d,' % crop if crop else '') + 'scale=64:48'
-    return subprocess.run(['ffmpeg', '-loglevel', 'error', '-ss', str(t), '-i', VIDEO, '-frames:v', '1',
-                           '-vf', vf, '-f', 'rawvideo', '-pix_fmt', 'gray', '-'],
-                          capture_output=True).stdout
+def frames(path, crop=None):
+    """The recording at one frame a second, each 64x48 gray bytes."""
+    vf = ('crop=%d:%d:%d:%d,' % crop if crop else '') + 'fps=1,scale=64:48'
+    raw = subprocess.run(['ffmpeg', '-loglevel', 'error', '-i', path, '-vf', vf, '-f', 'rawvideo',
+                          '-pix_fmt', 'gray', '-'], capture_output=True).stdout
+    n = 64 * 48
+    return [raw[i:i + n] for i in range(0, len(raw) - n + 1, n)]
 
 
-def lit(t):
-    f = frame(t)
-    return bool(f) and sum(f) / len(f) > 8
+def changed(a, b):
+    return sum(abs(x - y) > 16 for x, y in zip(a, b))
 
 
-def differ(a, b, crop=None):
-    """Did a quarter of the picture (or of crop) change between a and b seconds?"""
-    fa, fb = frame(a, crop), frame(b, crop)
-    return bool(fa) and len(fa) == len(fb) and sum(abs(x - y) > 16 for x, y in zip(fa, fb)) > len(fa) // 4
+def differ(a, b):
+    """A quarter of the picture changed."""
+    return bool(a) and len(a) == len(b) and changed(a, b) > len(a) // 4
 
 
 def same(a, b):
-    fa, fb = frame(a), frame(b)
-    return bool(fa) and len(fa) == len(fb) and sum(abs(x - y) > 16 for x, y in zip(fa, fb)) < len(fa) // 50
+    return bool(a) and len(a) == len(b) and changed(a, b) < len(a) // 50
 
 
-def video(t):
-    """The intro's 320x208 picture, in the middle of the screen, has detail."""
-    f = frame(t, (320, 208, 160, 136))
-    return bool(f) and statistics.pstdev(f) > 12
+def detail(f, over):
+    return bool(f) and statistics.pstdev(f) > over
 
 
-def world(t):
-    """The middle of the screen, away from the HUD, has detail: the track is
-    drawn. Before the 2026 relift every polygon covered the screen and the
-    world was one flat color behind a working HUD."""
-    f = frame(t, (320, 200, 160, 120))
-    return bool(f) and statistics.pstdev(f) > 20
+class Recording:
+    """A run's video, one frame a second: the whole screen, the middle away
+    from the HUD (track crop), and the intro's 320x208 picture (video crop)."""
+
+    def __init__(self, path):
+        self.full = frames(path)
+        self.mid = frames(path, (320, 200, 160, 120))
+        self.vid = frames(path, (320, 208, 160, 136))
+
+    def at(self, frames, t):
+        return frames[t] if t < len(frames) else b''
+
+
+def intro_plays(r):
+    a, b = r.at(r.vid, 8), r.at(r.vid, 14)
+    return detail(a, 12) and detail(b, 12) and differ(a, b)
+
+
+def attract(r):
+    """The attract-mode events in order, as seconds into the run (None if not
+    seen). Found, not timed: how fast the menu hands over to a race varies by
+    a few seconds from build to build.
+
+    menu    the first lit picture that holds still for a second
+    race    six seconds of the 3D world (the track crop has detail), none of
+            them the menu
+    moving  a race window in which at least three of the five steps change a
+            quarter of the screen
+    back    the menu again, after the first moving race
+    second  a moving race after that"""
+    f, m = r.full, r.mid
+    n = len(f)
+    ev = dict.fromkeys(('menu', 'race', 'moving', 'back', 'second'))
+    ev['menu'] = next((t for t in range(5, n - 1)
+                       if sum(f[t]) / len(f[t]) > 8 and same(f[t], f[t + 1])), None)
+    if ev['menu'] is None:
+        return ev
+    menu = lambda t: same(f[ev['menu']], f[t])
+    race = lambda t: all(detail(m[u], 20) and not menu(u) for u in range(t, t + 6))
+    moves = lambda t: sum(differ(f[u], f[u + 1]) for u in range(t, t + 5)) >= 3
+    first = lambda lo, test: next((t for t in range(lo, n - 6) if test(t)), None)
+    ev['race'] = first(ev['menu'], race)
+    ev['moving'] = first(ev['menu'], lambda t: race(t) and moves(t))
+    if ev['moving'] is not None:
+        ev['back'] = first(ev['moving'] + 6, menu)
+    if ev['back'] is not None:
+        ev['second'] = first(ev['back'] + 1, lambda t: race(t) and moves(t))
+    return ev
 
 
 # Two runs, no input. The intro is four minutes long, and skipping it with a
 # key leaves the menu dead (ROADMAP.md), so one short run watches it play
 # through the lifted codec, and the attract run goes without videos
 # (--no-codec: POD then shows its "install Indeo" still and goes straight on).
+# In the attract run the menu is up by about 10 s, a race runs to about 48 s,
+# the menu returns, and a second (split-screen) race starts by about 75 s.
 #
-# (name, test). Times are seconds into each run. Attract run: the menu is up
-# by 10, the race runs from about 20 to 48, the menu is back by 50, a video is
-# refused around 60 and the second, split-screen race runs from about 90.
+# (name, extra args, seconds, recording, milestones); a test takes the host's
+# output and the Recording.
 RUNS = [
     ('intro', [], 20, os.path.join(ROOT, 'work', 'conformance_intro.mp4'), [
-        ('the codec starts (Indeo 4.1, lifted)', lambda out: '[indeo] Indeo 4.1 lifted' in out),
-        ('the intro video plays', lambda out: video(8) and video(14) and differ(8, 14, (320, 208, 160, 136))),
-        ('no fault (intro)', lambda out: '=== fault' not in out),
+        ('the codec starts (Indeo 4.1, lifted)', lambda out, r: '[indeo] Indeo 4.1 lifted' in out),
+        ('the intro video plays', lambda out, r: intro_plays(r)),
+        ('no fault (intro)', lambda out, r: '=== fault' not in out),
     ]),
     ('attract', ['--no-codec'], 120, os.path.join(ROOT, 'work', 'conformance.mp4'), [
-        ('image mapped and imports bound', lambda out: re.search(r'mapped PODMMX\.EXE', out)),
-        ('the game folder is the CD', lambda out: re.search(r'\[cd\] \w:\\ is the game folder', out)),
-        ('DirectDraw created', lambda out: 'DirectDrawCreate -> host DirectDraw' in out),
-        ('past the CD and sound checks (100 frames)', lambda out: 'frame 100 presented' in out),
-        ('main menu drawn', lambda out: lit(14)),
-        ('attract race starts by itself', lambda out: differ(14, 30)),
-        ('the 3D world is drawn', lambda out: world(30) and world(40)),
-        ('the race moves', lambda out: differ(30, 40)),
-        ('back to the main menu', lambda out: same(14, 56)),
-        ('a second attract race after the video', lambda out: world(100) and differ(56, 100)),
-        ('no fault', lambda out: '=== fault' not in out),
+        ('image mapped and imports bound', lambda out, r: re.search(r'mapped PODMMX\.EXE', out)),
+        ('the game folder is the CD', lambda out, r: re.search(r'\[cd\] \w:\\ is the game folder', out)),
+        ('DirectDraw created', lambda out, r: 'DirectDrawCreate -> host DirectDraw' in out),
+        ('past the CD and sound checks (100 frames)', lambda out, r: 'frame 100 presented' in out),
+        ('main menu drawn', lambda out, r: r.ev['menu'] is not None),
+        ('attract race starts by itself, the 3D world drawn', lambda out, r: r.ev['race'] is not None),
+        ('the race moves', lambda out, r: r.ev['moving'] is not None),
+        ('back to the main menu', lambda out, r: r.ev['back'] is not None),
+        ('a second attract race', lambda out, r: r.ev['second'] is not None),
+        ('no fault', lambda out, r: '=== fault' not in out),
     ]),
 ]
 MILESTONES = [m for r in RUNS for m in r[4]]
 
 
 def run(exe):
-    global VIDEO
     passed, last = [], []
-    for _, args, seconds, path, milestones in RUNS:
-        VIDEO = path
-        cmd = [exe, '--run', '--headless', '--watchdog', str(seconds), '--record', VIDEO] + args
+    for name, args, seconds, path, milestones in RUNS:
+        cmd = [exe, '--run', '--headless', '--watchdog', str(seconds), '--record', path] + args
         try:
             p = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True, errors='replace',
                                timeout=seconds + 60)
             out = p.stdout + p.stderr
         except subprocess.TimeoutExpired as e:
             out = (e.stdout or b'').decode(errors='replace') + (e.stderr or b'').decode(errors='replace')
-        passed += [name for name, test in milestones if test(out)]
+        r = Recording(path)
+        r.ev = attract(r) if name == 'attract' else {}
+        if r.ev:
+            print('attract events (s): ' + '  '.join('%s %s' % kv for kv in r.ev.items()))
+        passed += [m for m, test in milestones if test(out, r)]
         last += [l for l in out.splitlines() if l.startswith(('===', '  in lifted'))]
     return passed, last[:3]
 
@@ -148,7 +187,7 @@ def main():
     if not (exe and os.path.isdir(os.path.join(ROOT, 'game')) and os.path.exists(os.path.join(GEN, 'recomp_dispatch.c'))):
         print('conformance: SKIP -- needs game/ (your copy), the lift and a build (README, Step by step)')
         return 0
-    os.makedirs(os.path.dirname(VIDEO), exist_ok=True)
+    os.makedirs(os.path.join(ROOT, 'work'), exist_ok=True)
 
     passed, last = run(os.path.abspath(exe))
     print('milestones: %d/%d  (%s)' % (len(passed), len(MILESTONES), os.path.relpath(exe, ROOT)))

@@ -40,7 +40,7 @@ its `lift32` writes the C, and its `native32` runtime hosts it.
 | CD music | 🔇 the CD audio device answers but plays nothing |
 | Sound effects | ✅ through Windows' `waveOut` |
 | Windowed play on a screen | ⚠️ the window and presenter are in, but only headless runs have been checked |
-| Conformance | **14/14** milestones, 0 lift errors ([below](#conformance)) |
+| Conformance | **13/13** milestones, 0 lift errors ([below](#conformance)) |
 
 The track did not draw at all before October 2026; relifting on the current pcrecomp
 fixed it. How, and every other wall on the way, is in [docs/bringup.md](docs/bringup.md).
@@ -194,20 +194,22 @@ video takes no input ([docs/movies.md](docs/movies.md)).
 
 ## Conformance
 
-`py -3 tools\conformance.py` runs the host headless twice and scores fourteen milestones
+`py -3 tools\conformance.py` runs the host headless twice and scores thirteen milestones
 from its output and its recordings, plus lift health from the generated tree:
 
 - 20 seconds of the intro: the lifted codec starts, the intro video plays, no fault.
 - 120 seconds with videos off (`--no-codec`, since the intro alone is four minutes): image
-  bound, the CD found, DirectDraw, past the CD and sound checks, the menu, the attract race
-  starting, the 3D world drawn, the race moving, back to the menu, a second attract race,
-  no fault.
+  bound, the CD found, DirectDraw, past the CD and sound checks, the menu, an attract race
+  with the 3D world drawn, the race moving, back to the menu, a second attract race,
+  no fault. These are found in order in the recording rather than at fixed times, since
+  how soon the menu hands over to a race moves by a few seconds between builds.
+
+It compares against [`conformance.json`](conformance.json) and fails on any drop.
 
 `py -3 tools\verify_indeo.py` checks the codec on its own: every video on the disc
 decoded by the lift, by the codec's original machine code and by ffmpeg.
-It compares against [`conformance.json`](conformance.json) and fails on any drop.
 
-**Current: 14/14 milestones; 11,865 functions lifted (game and codec), 0 errors, 3 unresolvable
+**Current: 13/13 milestones; 11,865 functions lifted (game and codec), 0 errors, 3 unresolvable
 tail labels. Codec: byte-identical to the original on 6 of 6 videos, 13,722 frames.**
 
 The corpus is your disc, which cannot be redistributed: without `game\`, a lift and a

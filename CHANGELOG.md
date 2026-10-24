@@ -20,9 +20,10 @@ versions follow [SemVer](https://semver.org/). No version has been tagged yet.
   shortcut, from the CD, `POD2_0.BIN` or an ISO.
 - A headless mode that never touches a screen: `--headless`, `--record out.mp4`,
   `--frames`, `--shot`, and scripted keys with `--key NAME@MS[+HOLD]`.
-- `tools/conformance.py` and `conformance.json`: fourteen milestones from two headless
+- `tools/conformance.py` and `conformance.json`: thirteen milestones from two headless
   runs (20 s of the intro, 120 s of attract mode) plus lift health, failing on any drop.
-  14/14.
+  The attract events (menu, race, menu, second race) are found in order in the recording,
+  not at fixed times, since their timing moves by seconds between builds. 13/13.
 - `--original`: the shipping machine code under the same host, for comparison.
 - `tools/catalog.py`: the function catalog from pcrecomp's disasm32, seeded with the code
   addresses the program uses as immediates.
