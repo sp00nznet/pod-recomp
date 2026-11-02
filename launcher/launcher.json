@@ -1,0 +1,17 @@
+{
+  "title": "POD Gold",
+  "repo": "sp00nznet/pod-recomp",
+  "accent": "#d9531e",
+  "note": {
+    "windows": "The first build takes 20 to 60 minutes and about 4 GB. Python and the Visual Studio Build Tools are installed if they are missing; the Build Tools are about 3 GB and add 15 to 30 minutes, and Windows asks for permission once. Choose your POD Gold CD's drive, a copy of its files, or the folder with POD2_0.BIN (or an ISO) in it."
+  },
+  "game": {
+    "name": "POD Gold",
+    "files": ["PODMMX.EXE|POD*.BIN|POD*.bin|*.iso"]
+  },
+  "sources": [{ "repo": "sp00nznet/pcrecomp", "ref": "main", "dir": "pcrecomp" }],
+  "setup": {
+    "windows": ["cmd", "/c", "Setup.cmd", "-Yes", "-Game", "{game}"]
+  },
+  "play": "POD Gold*"
+}
