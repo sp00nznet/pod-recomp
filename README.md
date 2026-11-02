@@ -27,7 +27,9 @@ its `lift32` writes the C, and its `native32` runtime hosts it.
 
 ## Status
 
-**Alpha, no tagged release yet.** It runs, untouched, from boot to the race and back.
+**v0.1.0.** It runs, untouched, from boot through the menus to a race of your own and
+back. Install it with the [installer](https://github.com/sp00nznet/pod-recomp/releases/latest)
+(recomp-launcher: point it at your disc, **Build**, **Play**) or with `Setup.cmd` below.
 
 | | |
 |---|---|
@@ -36,10 +38,10 @@ its `lift32` writes the C, and its `native32` runtime hosts it.
 | Skipping a video by key | ✅ Esc, Space or Enter |
 | Main menu | ✅ drawn, takes keys (`--key`) |
 | Attract-mode races | ✅ Downtown, seven cars, **the 3D world drawn**, HUD, laps and standings; then a four-way split-screen race |
-| Your own race (One Player) | ⏳ menus driven by `--key` to the track select; the race itself not yet |
+| Your own race (One Player) | ✅ Single Race, a track, a car, the countdown and the race: laps, gears, standings |
 | CD music | 🔇 the CD audio device answers but plays nothing |
 | Sound effects | ✅ through Windows' `waveOut` |
-| Windowed play on a screen | ⚠️ the window and presenter are in, but only headless runs have been checked |
+| Windowed play on a screen | ⚠️ the window and presenter are in; checked headless, by the build that ships, not yet by hand with a real keyboard |
 | Conformance | **16/16** milestones, 0 lift errors ([below](#conformance)) |
 
 The track did not draw at all before October 2026; relifting on the current pcrecomp
@@ -58,6 +60,10 @@ From headless runs (`--record`): the intro, the main menu, and POD's attract-mod
 ![Lap one, sixth gear](docs/screenshots/race2.png)
 
 ![The second attract race: four-way split screen](docs/screenshots/splitscreen.png)
+
+![One Player: choosing a car](docs/screenshots/car-select.png)
+
+![Your own race on Beltane](docs/screenshots/your-race.png)
 
 ## Getting Started
 

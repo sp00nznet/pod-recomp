@@ -116,6 +116,8 @@ if (-not (Test-Path (Join-Path $Toolkit 'tools\lift\lift32.py'))) {
   if (-not (Get-Command git -ErrorAction SilentlyContinue)) { Fail "git is needed to fetch pcrecomp. Install Git for Windows, then run Setup.cmd again." }
   if (-not (Ask "  Download it now (git, about 20 MB)?")) { Fail "pcrecomp is required at $Toolkit." }
   Run "Cloning pcrecomp" @('git', 'clone', 'https://github.com/sp00nznet/pcrecomp', $Toolkit)
+  # The toolkit commit this release was tested on (launcher\launcher.json pins the same one).
+  Run "Checking out the tested pcrecomp" @('git', '-C', $Toolkit, 'checkout', '-q', 'a255839d0b78688aa98e677f05d0f0f74710d8aa')
 }
 # The toolkit change this game needs (pcrecomp#128): without it POD's own
 # VirtualProtect makes its code executable again and the original runs.

@@ -9,7 +9,7 @@
     "name": "POD Gold",
     "files": ["PODMMX.EXE|POD*.BIN|POD*.bin|*.iso"]
   },
-  "sources": [{ "repo": "sp00nznet/pcrecomp", "ref": "main", "dir": "pcrecomp" }],
+  "sources": [{ "repo": "sp00nznet/pcrecomp", "ref": "a255839d0b78688aa98e677f05d0f0f74710d8aa", "dir": "pcrecomp" }],
   "setup": {
     "windows": ["cmd", "/c", "Setup.cmd", "-Yes", "-Game", "{game}"]
   },

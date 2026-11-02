@@ -1,9 +1,30 @@
 # Changelog
 
 All notable changes to this project. Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
-versions follow [SemVer](https://semver.org/). No version has been tagged yet.
+versions follow [SemVer](https://semver.org/).
 
 ## [Unreleased]
+
+## [0.1.0] - 2026-11-02
+
+The first release: POD Gold (Ubi Soft, 1997), `PODMMX.EXE`, recompiled to C on pcrecomp's
+native32 host. Boot, the videos, the menus, a race of your own and the attract races.
+
+### Added
+- An installer: `launcher/launcher.json` and `.github/workflows/installer.yml` build
+  recomp-launcher for POD (Windows). Point it at the CD, a copy of its files, or the folder
+  with `POD2_0.BIN` or an ISO; it fetches this repo and pcrecomp and runs `Setup.cmd`.
+- `Setup.cmd -Yes -Game <path>` runs unattended: no questions, no "Press Enter" under
+  `RECOMP_LAUNCHER`, a folder holding the image is found, and the Visual Studio 2022 Build
+  Tools are installed when missing (they were a stop before).
+- Checked: One Player, Single Race, Beltane, a car and the race itself, headless with
+  scripted keys (`docs/screenshots/your-race.png`).
+
+### Changed
+- The toolkit is pinned to the pcrecomp commit this release was tested on (`a255839`), in
+  the installer and in `Setup.cmd`'s clone. pcrecomp's main since then (through `ef3f0da`)
+  lifts 480 more functions and loses the scripted keys (14/16 conformance); until that is
+  found, POD stays on the tested one.
 
 ### Fixed
 - Skipping a video by key, and Esc on the main menu, no longer freeze the menu. POD reads
