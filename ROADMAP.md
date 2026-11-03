@@ -2,14 +2,17 @@
 
 ## Next
 
-- **A race of your own.** The conformance run drives One Player to the track select with
-  `--key`; go on through a car to the race, and score the race.
+- **Score a race of your own in conformance.** It plays (v0.1.0, by hand-written `--key`
+  runs); add the run and its milestones.
+- **pcrecomp main regresses POD** (keys lost, 16 -> 14 milestones, from 11,863 to 12,345
+  functions) somewhere in `a255839..ef3f0da`: bisect, fix, then unpin the toolkit.
 - **CD music.** The host's `cdaudio` is silent. The music is track 2 of the user's
   `POD2_0.BIN` (raw 2352-byte audio sectors after the data track): play it through
   `waveOut` when the game asks MCI to play, and loop it as the CD did.
 - **Windowed play checked on a real screen**, through offstage: focus, the real keyboard,
   the presenter's scaling, and the mouse cursor POD clips.
-- **A clean-machine run of Setup.cmd** on a netlab test VM with a disc image.
+- **A clean-machine run of the installer** on a netlab test VM with a disc image (a fresh
+  checkout on the dev machine passed, unattended, 2026-11-02).
 
 ## Later
 
